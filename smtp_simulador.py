@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-Simulador Interactivo de SMTP - Cliente-Servidor y Servidor-Servidor
-Versión dinámica con toggles/checkboxes.
+Simulador Interactivo de SMTP - Cliente-Servidor (MUA->MSA) y Servidor-Servidor (MTA->MTA)
+
+Arquitectura:
+  - La conversacion completa se DERIVA de (config) en cada render (build_*_conversation).
+  - El unico estado acumulado es el numero de "fase" visible por escenario.
+  - Cambiar cualquier opcion reconstruye una conversacion siempre coherente.
+
+Modelo de seguridad (escenario 2):
+  - DMARC se evalua por ALIGNMENT: el dominio del header 'From:' debe coincidir con
+    el dominio validado por SPF (envelope) y/o por DKIM (d=).
+  - La politica DMARC la publica el dominio del 'From:' (en spoof, el dominio suplantado),
+    no el receptor. Por eso un spoof entra o no segun lo que publique ese dominio.
 
 Ejecutar:
     pip install streamlit
@@ -11,7 +21,7 @@ Ejecutar:
 import streamlit as st
 from typing import List, Dict, Any
 
-st.set_page_config(page_title="Simulador SMTP Interactivo", layout="wide", page_icon="📧")
+st.set_page_config(page_title="Simulador SMTP Interactivo", layout="wide", page_icon="@")
 
 # ============================================
 # ESTILOS
@@ -31,551 +41,461 @@ st.markdown("""
     }
     .client { color: #60a5fa; }
     .server { color: #34d399; }
-    .note { color: #fbbf24; font-style: italic; }
-    .box {
-        border: 1px solid #444;
-        border-radius: 12px;
-        padding: 12px;
-        background-color: #111;
-        text-align: center;
-    }
-    .header {
-        font-weight: 600;
-        font-size: 1.1rem;
-    }
+    .reject { color: #f87171; }
+    .note   { color: #fbbf24; font-style: italic; }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================
-# ESTADO GLOBAL (session_state)
+# ESTADO: solo la fase visible de cada escenario
 # ============================================
-def init_state():
-    if "s1_log" not in st.session_state:
-        st.session_state.s1_log = []
-        st.session_state.s1_phase = 0
-        st.session_state.s1_config = {
-            "tls_completed": True,
-        }
-
-    if "s2_log" not in st.session_state:
-        st.session_state.s2_log = []
-        st.session_state.s2_phase = 0
-        st.session_state.s2_config = {
-            "use_tls": True,
-            "spf_pass": True,
-            "dkim_pass": True,
-            "dmarc_policy": "none",   # none | quarantine | reject
-            "spf_bypass_spoof": False,
-        }
-
-init_state()
-
-# ============================================
-# LÓGICA DE DIÁLOGO - ESCENARIO 1 (MUA → MSA)
-# ============================================
-def get_s1_turn(phase: int, config: dict) -> Dict[str, Any]:
-    """Devuelve las líneas para la fase actual según la config."""
-    tls = config["tls_completed"]
-
-    if phase == 0:
-        return {
-            "client": [],
-            "server": ["220 smtp.ejemplo.com ESMTP Postfix"],
-            "explanation": "El servidor acepta la conexión TCP en puerto 587.",
-            "checks": []
-        }
-    elif phase == 1:
-        return {
-            "client": ["EHLO mi-computadora.local"],
-            "server": ["250-smtp.ejemplo.com Hello...",
-                       "250-STARTTLS" if tls else "250 8BITMIME",
-                       "250 8BITMIME" if tls else ""],
-            "explanation": "Cliente se presenta. El servidor ofrece STARTTLS solo si soporta TLS.",
-            "checks": []
-        }
-    elif phase == 2:
-        if tls:
-            return {
-                "client": ["STARTTLS"],
-                "server": ["220 2.0.0 Ready to start TLS"],
-                "explanation": "Se negocia TLS. A partir de ahora todo está cifrado.",
-                "checks": ["tls"]
-            }
-        else:
-            return {
-                "client": ["[Sin STARTTLS - el cliente continúa sin cifrado]"],
-                "server": ["[Servidor acepta continuar sin TLS]"],
-                "explanation": "Sin TLS. Cualquier AUTH posterior sería inseguro (credenciales en claro).",
-                "checks": []
-            }
-    elif phase == 3:
-        # Segundo EHLO solo si hubo TLS
-        if tls:
-            lines = {
-                "client": ["EHLO mi-computadora.local"],
-                "server": ["250-smtp.ejemplo.com Hello...",
-                           "250-AUTH PLAIN LOGIN",
-                           "250 8BITMIME"],
-                "explanation": "Después de TLS el servidor ofrece AUTH (solo es seguro ofrecerlo sobre TLS).",
-                "checks": []
-            }
-        else:
-            lines = {
-                "client": ["EHLO mi-computadora.local"],
-                "server": ["250-smtp.ejemplo.com Hello...",
-                           "250 8BITMIME"],
-                "explanation": "Sin TLS previo. El servidor no ofrece AUTH (buena práctica de seguridad).",
-                "checks": []
-            }
-        return lines
-    elif phase == 4:
-        if tls:
-            return {
-                "client": ["AUTH LOGIN"],
-                "server": ["334 VXNlcm5hbWU6"],
-                "explanation": "Autenticación solo después de TLS.",
-                "checks": ["auth"]
-            }
-        else:
-            return {
-                "client": ["AUTH LOGIN"],
-                "server": ["535 5.7.0 Authentication rejected - TLS required"],
-                "explanation": "El servidor rechaza AUTH porque no hay canal seguro.",
-                "checks": []
-            }
-    elif phase == 5:
-        if tls:
-            return {
-                "client": ["Y2FybG9zQGVqZW1wbG8uY29t   (carlos@ejemplo.com en Base64)"],
-                "server": ["334 UGFzc3dvcmQ6"],
-                "explanation": "Usuario enviado en Base64.",
-                "checks": []
-            }
-        else:
-            return {"client": [], "server": [], "explanation": "Flujo abortado por falta de TLS.", "checks": []}
-    elif phase == 6:
-        if tls:
-            return {
-                "client": ["bWlwYXNzd29yZDEyMw==   (mipassword123 en Base64)"],
-                "server": ["235 2.7.0 Authentication successful"],
-                "explanation": "Autenticación exitosa solo porque iba por TLS.",
-                "checks": ["auth_ok"]
-            }
-        return {"client": [], "server": [], "explanation": "", "checks": []}
-    elif phase == 7:
-        return {
-            "client": ["MAIL FROM:<carlos@ejemplo.com>"],
-            "server": ["250 2.1.0 Ok"],
-            "explanation": "Remitente aceptado.",
-            "checks": []
-        }
-    elif phase == 8:
-        return {
-            "client": ["RCPT TO:<destino@cualquierdominio.com>"],
-            "server": ["250 2.1.5 Ok"],
-            "explanation": "Destinatario aceptado.",
-            "checks": []
-        }
-    elif phase == 9:
-        return {
-            "client": ["DATA", "... (headers + cuerpo + . )"],
-            "server": ["354 End data with <CR><LF>.<CR><LF>", "250 2.0.0 Ok: queued as 98765"],
-            "explanation": "Mensaje entregado al MSA.",
-            "checks": []
-        }
-    else:
-        return {
-            "client": ["QUIT"],
-            "server": ["221 2.0.0 Bye"],
-            "explanation": "Sesión cerrada.",
-            "checks": []
-        }
-
-# ============================================
-# LÓGICA DE DIÁLOGO - ESCENARIO 2 (MTA → MTA)
-# ============================================
-def get_s2_turn(phase: int, config: dict) -> Dict[str, Any]:
-    use_tls = config["use_tls"]
-    spf = config["spf_pass"]
-    dkim = config["dkim_pass"]
-    dmarc = config["dmarc_policy"]
-    spoof = config["spf_bypass_spoof"]
-
-    # === SPF-Bypass + Spoof realista ===
-    attacker_ip = "203.0.113.45"
-    reverse_domain = "mail.evil-reverso.com"
-
-    if spoof:
-        ehlo_name = reverse_domain
-        mail_from = f"MAIL FROM: atacante@{reverse_domain}"
-        from_header = 'From: "CEO" <ceo@empresa-legitima.com>'
-        connection_note = f"Conexión desde IP {attacker_ip} (reverse DNS: {reverse_domain}). El dominio {reverse_domain} tiene SPF que autoriza esta IP."
-    else:
-        ehlo_name = "mail.origen.com"
-        mail_from = "MAIL FROM: carlos@ejemplo.com"
-        from_header = "From: carlos@ejemplo.com"
-        connection_note = ""
-
-    if phase == 0:
-        explanation = "MTA destino acepta conexión en puerto 25."
-        if spoof:
-            explanation = f"{connection_note} El servidor ve una IP con reverse DNS válido y SPF autorizado para ese dominio."
-        return {
-            "client": [],
-            "server": ["220 mail.destino.com ESMTP Postfix"],
-            "explanation": explanation,
-            "checks": ["ip"]
-        }
-    elif phase == 1:
-        server_resp = [f"250-mail.destino.com Hello {ehlo_name}"]
-        if use_tls:
-            server_resp.append("250-STARTTLS")
-        server_resp.append("250 8BITMIME")
-
-        explanation = "Servidor se identifica. STARTTLS se ofrece solo si el modo lo permite."
-        if spoof:
-            explanation = f"EHLO usa el dominio del reverse DNS. La IP + reverse + SPF del dominio del atacante hacen que parezca legítimo."
-
-        return {
-            "client": [f"EHLO {ehlo_name}"],
-            "server": server_resp,
-            "explanation": explanation,
-            "checks": ["ehlo", "mx"]
-        }
-    elif phase == 2:
-        if use_tls:
-            return {
-                "client": ["STARTTLS"],
-                "server": ["220 2.0.0 Ready to start TLS"],
-                "explanation": "Se negocia TLS. Todo lo que sigue va cifrado.",
-                "checks": ["tls"]
-            }
-        else:
-            return {
-                "client": ["[Sin STARTTLS - se continúa en texto claro]"],
-                "server": ["[Continuando sin cifrado (común en puerto 25)]"],
-                "explanation": "Sin TLS. El canal queda en texto claro (riesgo de interceptación).",
-                "checks": ["no_tls"]
-            }
-    elif phase == 3:
-        # Después de TLS (o directamente si no hay TLS) se hace MAIL FROM
-        if use_tls:
-            client_lines = [f"EHLO {ehlo_name}", mail_from]
-        else:
-            client_lines = [mail_from]
-
-        server_lines = ["250 2.1.0 Ok"]
-        if not spf:
-            server_lines = ["550 5.7.1 SPF fail - IP not authorized"]
-
-        explanation = "MAIL FROM. Aquí se evalúa SPF usando el dominio del envelope + IP + reverse DNS."
-        if spoof:
-            explanation = (
-                f"MAIL FROM: {mail_from}. "
-                f"SPF pasa porque el dominio {reverse_domain} autoriza explícitamente la IP {attacker_ip}. "
-                "Sin embargo, esto es solo el 'envelope'. El contenido del mail puede mentir."
-            )
-
-        return {
-            "client": client_lines,
-            "server": server_lines,
-            "explanation": explanation,
-            "checks": ["spf"] if spf else []
-        }
-    elif phase == 4:
-        if not spf and dmarc == "reject":
-            return {
-                "client": [],
-                "server": ["550 5.7.1 Message rejected due to SPF+DMARC policy"],
-                "explanation": "Rechazo temprano por SPF fail + DMARC p=reject.",
-                "checks": []
-            }
-
-        return {
-            "client": ["RCPT TO: destino@cualquierdominio.com"],
-            "server": ["250 2.1.5 Ok"],
-            "explanation": "Destinatario aceptado (es local del destino).",
-            "checks": ["noauth"]
-        }
-    elif phase == 5:
-        return {
-            "client": ["DATA"],
-            "server": ["354 End data with <CR><LF>.<CR><LF>"],
-            "explanation": "Inicio de transferencia del mensaje.",
-            "checks": []
-        }
-    elif phase == 6:
-        # Contenido del mensaje
-        body = [
-            from_header,
-            "To: destino@cualquierdominio.com",
-            "Subject: Importante - Actualización de la empresa",
-            "",
-            "Estimado equipo,",
-            "Por favor proceder con la transferencia urgente.",
-            "",
-            "Atentamente,",
-            "CEO",
-        ]
-        if spoof:
-            body.append("DKIM-Signature: (ausente o inválida para empresa-legitima.com)")
-        else:
-            body.append("DKIM-Signature: v=1; a=rsa-sha256; ... (firma válida)")
-
-        body.append(".")
-
-        server_resp = ["250 2.0.0 Ok: queued as 12345"]
-
-        # Decisión final según DMARC + resultados
-        if (not spf and not dkim):
-            if dmarc == "reject":
-                server_resp = ["550 5.7.1 Message rejected due to DMARC policy (p=reject)"]
-            elif dmarc == "quarantine":
-                server_resp = ["250 Ok: queued as 12345 (quarantined - DMARC p=quarantine)"]
-            # si p=none sigue aceptado
-
-        explanation = "Se envía el cuerpo completo. DKIM y DMARC se verifican sobre los headers + cuerpo."
-        if spoof:
-            explanation = (
-                "¡Aquí está la discrepancia evidente! El 'envelope' (MAIL FROM + HELO + IP + SPF) es de atacante@mail.evil-reverso.com. "
-                "Pero el 'From:' que ve el usuario es ceo@empresa-legitima.com. "
-                "Servidores grandes detectan esta diferencia entre envelope y headers (DMARC alignment + otros chequeos). "
-                "Algunos servidores más permisivos pueden no detectarlo y entregar el mail."
-            )
-
-        return {
-            "client": body,
-            "server": server_resp,
-            "explanation": explanation,
-            "checks": ["dkim", "dmarc"]
-        }
-    else:
-        return {
-            "client": ["QUIT"],
-            "server": ["221 2.0.0 Bye"],
-            "explanation": "Cierre de la sesión entre MTAs.",
-            "checks": []
-        }
-
-# ============================================
-# FUNCIONES DE AVANCE
-# ============================================
-def advance_s1():
-    phase = st.session_state.s1_phase
-    config = st.session_state.s1_config
-    turn = get_s1_turn(phase, config)
-
-    if turn["client"]:
-        for line in turn["client"]:
-            st.session_state.s1_log.append(("client", line))
-    if turn["server"]:
-        for line in turn["server"]:
-            if line:  # evitar líneas vacías
-                st.session_state.s1_log.append(("server", line))
-
-    st.session_state.s1_phase += 1
-
-def advance_s2():
-    phase = st.session_state.s2_phase
-    config = st.session_state.s2_config
-    turn = get_s2_turn(phase, config)
-
-    if turn["client"]:
-        for line in turn["client"]:
-            st.session_state.s2_log.append(("client", line))
-    if turn["server"]:
-        for line in turn["server"]:
-            if line:
-                st.session_state.s2_log.append(("server", line))
-
-    st.session_state.s2_phase += 1
-
-def reset_s1():
-    st.session_state.s1_log = []
+if "s1_phase" not in st.session_state:
     st.session_state.s1_phase = 0
-
-def reset_s2():
-    st.session_state.s2_log = []
+if "s2_phase" not in st.session_state:
     st.session_state.s2_phase = 0
 
+
 # ============================================
-# UI - ENCABEZADO
+# ESCENARIO 1 (MUA -> MSA, puerto 587)
+# Devuelve la conversacion COMPLETA segun config.
+# Cada turno: {"client": [str...], "server": [str...], "explanation": str}
+# El color de error se infiere de codigos 4xx/5xx.
 # ============================================
-st.title("📧 Simulador Interactivo de SMTP")
-st.caption("Marca las opciones y avanza paso a paso. La conversación cambia según lo que marques.")
+def build_s1_conversation(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    tls = cfg["tls_completed"]
+    convo: List[Dict[str, Any]] = []
+
+    convo.append({
+        "client": [],
+        "server": ["220 smtp.ejemplo.com ESMTP Postfix"],
+        "explanation": "El servidor acepta la conexion TCP en el puerto 587 (submission) y envia su banner.",
+    })
+
+    if tls:
+        convo.append({
+            "client": ["EHLO mi-computadora.local"],
+            "server": ["250-smtp.ejemplo.com Hello mi-computadora.local",
+                       "250-STARTTLS",
+                       "250 8BITMIME"],
+            "explanation": "El cliente se presenta con EHLO. El servidor anuncia sus capacidades e incluye STARTTLS. "
+                           "Todavia NO ofrece AUTH: seria inseguro anunciarlo antes de cifrar.",
+        })
+        convo.append({
+            "client": ["STARTTLS"],
+            "server": ["220 2.0.0 Ready to start TLS"],
+            "explanation": "Se negocia TLS. A partir de aca todo el dialogo viaja cifrado.",
+        })
+        convo.append({
+            "client": ["EHLO mi-computadora.local"],
+            "server": ["250-smtp.ejemplo.com Hello mi-computadora.local",
+                       "250-AUTH PLAIN LOGIN",
+                       "250 8BITMIME"],
+            "explanation": "Segundo EHLO, ya sobre el canal cifrado. Ahora si el servidor ofrece AUTH, "
+                           "porque las credenciales viajaran protegidas por TLS.",
+        })
+        convo.append({
+            "client": ["AUTH LOGIN"],
+            "server": ["334 VXNlcm5hbWU6"],
+            "explanation": "El cliente pide autenticarse con LOGIN. El servidor responde con el challenge "
+                           "'Username:' codificado en Base64 (VXNlcm5hbWU6).",
+        })
+        convo.append({
+            "client": ["Y2FybG9zQGVqZW1wbG8uY29t"],
+            "server": ["334 UGFzc3dvcmQ6"],
+            "explanation": "El cliente manda el usuario en Base64 (Y2FybG9zQGVqZW1wbG8uY29t = carlos@ejemplo.com). "
+                           "Base64 NO es cifrado: solo es seguro porque ya hay TLS por debajo. El servidor pide la "
+                           "contrasena ('Password:' = UGFzc3dvcmQ6).",
+        })
+        convo.append({
+            "client": ["bWlwYXNzd29yZDEyMw=="],
+            "server": ["235 2.7.0 Authentication successful"],
+            "explanation": "Contrasena en Base64 (bWlwYXNzd29yZDEyMw== = mipassword123). El servidor la acepta. "
+                           "Esto solo es seguro porque viaja dentro de TLS.",
+        })
+        convo.append({
+            "client": ["MAIL FROM:<carlos@ejemplo.com>"],
+            "server": ["250 2.1.0 Ok"],
+            "explanation": "Remitente del envelope. El servidor lo acepta porque el usuario ya esta autenticado.",
+        })
+        convo.append({
+            "client": ["RCPT TO:<destino@otrodominio.com>"],
+            "server": ["250 2.1.5 Ok"],
+            "explanation": "Destinatario. Como el cliente esta autenticado, el MSA acepta hacer relay hacia un dominio "
+                           "externo: justamente su trabajo es sacar el correo de su usuario hacia afuera.",
+        })
+        convo.append({
+            "client": ["DATA",
+                       "From: carlos@ejemplo.com",
+                       "To: destino@otrodominio.com",
+                       "Subject: Hola",
+                       "",
+                       "Cuerpo del mensaje.",
+                       "."],
+            "server": ["354 End data with <CR><LF>.<CR><LF>",
+                       "250 2.0.0 Ok: queued as 98765"],
+            "explanation": "El cliente envia headers + cuerpo, terminados con una linea de un unico punto. "
+                           "El MSA lo encola para entregarlo. Aca termina la tarea del cliente.",
+        })
+        convo.append({
+            "client": ["QUIT"],
+            "server": ["221 2.0.0 Bye"],
+            "explanation": "Sesion cerrada correctamente.",
+        })
+    else:
+        convo.append({
+            "client": ["EHLO mi-computadora.local"],
+            "server": ["250-smtp.ejemplo.com Hello mi-computadora.local",
+                       "250 8BITMIME"],
+            "explanation": "El cliente se presenta. Sin STARTTLS negociado, el servidor NO anuncia AUTH: "
+                           "es la buena practica para no invitar a mandar credenciales en claro.",
+        })
+        convo.append({
+            "client": ["AUTH LOGIN"],
+            "server": ["530 5.7.0 Must issue a STARTTLS command first"],
+            "explanation": "El cliente intenta autenticarse igual. El servidor lo rechaza con 530: exige STARTTLS "
+                           "antes de cualquier AUTH. Sin canal cifrado no hay login. El flujo se corta aca.",
+        })
+        convo.append({
+            "client": ["QUIT"],
+            "server": ["221 2.0.0 Bye"],
+            "explanation": "Sin poder autenticarse, la sesion se cierra.",
+        })
+
+    return convo
+
+
+# ============================================
+# ESCENARIO 2 (MTA -> MTA, puerto 25)
+# ============================================
+def build_s2_conversation(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    use_tls = cfg["use_tls"]
+    spf_ok  = cfg["spf_pass"]
+    dkim_ok = cfg["dkim_pass"]
+    policy  = cfg["dmarc_policy"]        # none | quarantine | reject
+    spoof   = cfg["spf_bypass_spoof"]
+
+    attacker_ip = "203.0.113.45"
+
+    if spoof:
+        helo_name     = "mail.evil-reverso.com"
+        env_domain    = "evil-reverso.com"          # dominio del envelope (MAIL FROM)
+        mail_from     = "MAIL FROM:<atacante@mail.evil-reverso.com>"
+        from_header   = 'From: "CEO" <ceo@empresa-legitima.com>'
+        header_domain = "empresa-legitima.com"      # dominio del From: (el suplantado)
+        spf_raw_pass  = True                         # el atacante publica SPF para su IP
+        spf_aligned   = False                        # evil-reverso != empresa-legitima
+        dkim_aligned  = False                        # no tiene la clave de empresa-legitima
+        dkim_valid    = False
+    else:
+        helo_name     = "mail.origen.com"
+        env_domain    = "ejemplo.com"
+        mail_from     = "MAIL FROM:<carlos@ejemplo.com>"
+        from_header   = "From: carlos@ejemplo.com"
+        header_domain = "ejemplo.com"
+        spf_raw_pass  = spf_ok
+        spf_aligned   = spf_ok                        # mismo dominio en envelope y From:
+        dkim_aligned  = dkim_ok
+        dkim_valid    = dkim_ok
+
+    dmarc_pass = spf_aligned or dkim_aligned
+
+    convo: List[Dict[str, Any]] = []
+
+    # 0 - conexion
+    convo.append({
+        "client": [],
+        "server": ["220 mail.destino.com ESMTP Postfix"],
+        "explanation": (f"El MTA destino acepta la conexion en el puerto 25 desde la IP {attacker_ip}."
+                        if spoof else
+                        "El MTA destino acepta la conexion TCP entrante en el puerto 25 y envia su banner."),
+    })
+
+    # 1 - EHLO
+    server1 = [f"250-mail.destino.com Hello {helo_name} [{attacker_ip}]"
+               if spoof else f"250-mail.destino.com Hello {helo_name}"]
+    if use_tls:
+        server1.append("250-STARTTLS")
+    server1.append("250 8BITMIME")
+    convo.append({
+        "client": [f"EHLO {helo_name}"],
+        "server": server1,
+        "explanation": ("El MTA origen se identifica con el dominio del reverse DNS del atacante. La IP tiene PTR "
+                        "valido, lo que ya esquiva filtros basicos de reputacion."
+                        if spoof else
+                        "El MTA origen se presenta. No hay login con usuario/contrasena entre MTAs: la confianza "
+                        "se basa en IP, DNS (SPF/DKIM/DMARC) y reputacion."),
+    })
+
+    # 2 - TLS opcional (+ segundo EHLO)
+    if use_tls:
+        convo.append({
+            "client": ["STARTTLS"],
+            "server": ["220 2.0.0 Ready to start TLS"],
+            "explanation": "Se negocia TLS oportunista. Cifra el TRANSPORTE, pero no autentica el CONTENIDO: "
+                           "SPF/DKIM/DMARC son ortogonales a TLS.",
+        })
+        convo.append({
+            "client": [f"EHLO {helo_name}"],
+            "server": ["250-mail.destino.com Hello (sobre TLS)", "250 8BITMIME"],
+            "explanation": "Segundo EHLO sobre el canal ya cifrado, como en cualquier sesion ESMTP con STARTTLS.",
+        })
+
+    # 3 - MAIL FROM + evaluacion SPF
+    if spf_raw_pass:
+        if spoof:
+            mf_expl = (f"{mail_from}. SPF se evalua sobre el dominio del envelope ({env_domain}) y PASA: el atacante "
+                       f"publico un SPF que autoriza su propia IP. Pero esto valida {env_domain}, NO "
+                       f"empresa-legitima.com. SPF mira el envelope, no el From: que vera la victima.")
+        else:
+            mf_expl = (f"{mail_from}. SPF evalua la IP de origen contra el registro del dominio del envelope "
+                       f"({env_domain}) y pasa.")
+    else:
+        mf_expl = (f"{mail_from}. SPF FALLA para {env_domain} (la IP no esta autorizada). Muchos MTAs no cortan "
+                   "aca: registran el fallo y dejan que DMARC decida sobre el resultado final.")
+    convo.append({
+        "client": [mail_from],
+        "server": ["250 2.1.0 Ok"],
+        "explanation": mf_expl,
+    })
+
+    # 4 - RCPT TO
+    convo.append({
+        "client": ["RCPT TO:<destino@mail.destino.com>"],
+        "server": ["250 2.1.5 Ok"],
+        "explanation": "El destinatario pertenece a un dominio que ESTE MTA hospeda, asi que no es relay y lo acepta. "
+                       "(Si fuera un dominio ajeno responderia 554 5.7.1 relay access denied.)",
+    })
+
+    # 5 - DATA inicio
+    convo.append({
+        "client": ["DATA"],
+        "server": ["354 End data with <CR><LF>.<CR><LF>"],
+        "explanation": "El servidor autoriza el envio del contenido (headers + cuerpo).",
+    })
+
+    # 6 - cuerpo + decision DMARC por alignment
+    body = [
+        from_header,
+        "To: destino@mail.destino.com",
+        "Subject: Actualizacion importante",
+        "",
+        "Estimado equipo, proceder con la transferencia.",
+        "",
+        ("CEO" if spoof else "Carlos"),
+    ]
+    if dkim_valid:
+        body.append(f"DKIM-Signature: v=1; a=rsa-sha256; d={header_domain}; ... (firma valida)")
+    elif spoof:
+        body.append("(sin DKIM valido para empresa-legitima.com: el atacante no tiene su clave privada)")
+    else:
+        body.append("(sin firma DKIM)")
+    body.append(".")
+
+    aligned_by = []
+    if spf_aligned:
+        aligned_by.append("SPF")
+    if dkim_aligned:
+        aligned_by.append("DKIM")
+
+    if dmarc_pass:
+        server6 = ["250 2.0.0 Ok: queued as 12345"]
+        why = f"DMARC PASA: {' y '.join(aligned_by)} alinea(n) con el From: ({header_domain})."
+    else:
+        if policy == "reject":
+            server6 = [f"550 5.7.1 rejected: DMARC policy of {header_domain} is p=reject"]
+            decision = "RECHAZADO"
+        elif policy == "quarantine":
+            server6 = [f"250 2.0.0 Ok: queued as 12345  (a SPAM por DMARC p=quarantine de {header_domain})"]
+            decision = "A CUARENTENA (spam)"
+        else:
+            server6 = ["250 2.0.0 Ok: queued as 12345"]
+            decision = "ACEPTADO pese al fallo"
+        why = (f"DMARC NO alinea: ni SPF ni DKIM validan el dominio del From: ({header_domain}). "
+               f"La politica publicada por {header_domain} es p={policy}  ->  {decision}.")
+
+    if spoof:
+        expl6 = (f"Aca estan el ataque y su defensa juntos. El envelope dice {env_domain} (y su SPF pasa), pero el "
+                 f"From: que ve la persona dice {header_domain}. DMARC compara el From: contra lo validado por "
+                 f"SPF/DKIM y no alinea. {why}  Leccion: el spoof se frena o no segun la politica que publique "
+                 f"{header_domain}, NO segun si el receptor es 'grande'. Si {header_domain} no publica DMARC (o usa "
+                 f"p=none), el correo entra igual.")
+    else:
+        expl6 = (f"Se evaluan DKIM y DMARC sobre headers + cuerpo. {why}  "
+                 "(Notar que DKIM solo puede 'rescatar' un SPF fallido: con alignment de DKIM, DMARC pasa.)")
+
+    convo.append({
+        "client": body,
+        "server": server6,
+        "explanation": expl6,
+    })
+
+    # 7 - QUIT
+    convo.append({
+        "client": ["QUIT"],
+        "server": ["221 2.0.0 Bye"],
+        "explanation": "Cierre de la sesion entre MTAs.",
+    })
+
+    return convo
+
+
+# ============================================
+# RENDER GENERICO DE UN ESCENARIO
+# ============================================
+def is_error_line(line: str) -> bool:
+    s = line.strip()
+    return len(s) >= 3 and s[:3].isdigit() and s[0] in ("4", "5")
+
+
+def render_terminal(convo: List[Dict[str, Any]], phase: int,
+                    client_prefix: str, server_prefix: str) -> str:
+    html = ""
+    for turn in convo[:phase]:
+        for line in turn["client"]:
+            html += f'<span class="client">{client_prefix}{line}</span><br>'
+        for line in turn["server"]:
+            cls = "reject" if is_error_line(line) else "server"
+            html += f'<span class="{cls}">{server_prefix}{line}</span><br>'
+    return html
+
+
+def scenario_block(key: str, convo: List[Dict[str, Any]],
+                   client_prefix: str, server_prefix: str, auto_label: str):
+    phase_key = f"{key}_phase"
+    total = len(convo)
+    # clamp por si la config nueva acorto la conversacion
+    st.session_state[phase_key] = min(st.session_state[phase_key], total)
+    phase = st.session_state[phase_key]
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Avanzar paso", key=f"{key}_step", use_container_width=True,
+                     disabled=(phase >= total)):
+            st.session_state[phase_key] = min(phase + 1, total)
+            st.rerun()
+    with c2:
+        if st.button("Reiniciar", key=f"{key}_reset", use_container_width=True):
+            st.session_state[phase_key] = 0
+            st.rerun()
+    with c3:
+        if st.button(auto_label, key=f"{key}_play", use_container_width=True):
+            st.session_state[phase_key] = total
+            st.rerun()
+
+    st.caption(f"Paso {phase} de {total}")
+
+    st.markdown("**Terminal SMTP**")
+    if phase > 0:
+        html = render_terminal(convo, phase, client_prefix, server_prefix)
+        st.markdown(f'<div class="terminal">{html}</div>', unsafe_allow_html=True)
+    else:
+        st.info("Toca 'Avanzar paso' para comenzar. La conversacion se adapta a las opciones de arriba.")
+
+    if phase > 0:
+        st.markdown(f"<span class='note'>{convo[phase-1]['explanation']}</span>",
+                    unsafe_allow_html=True)
+
+
+# ============================================
+# UI
+# ============================================
+st.title("Simulador Interactivo de SMTP")
+st.caption("Marca las opciones y avanza paso a paso. La conversacion se reconstruye entera segun lo que marques, "
+           "asi que siempre es coherente.")
 
 col1, col2 = st.columns(2)
 
-# ============================================
-# ESCENARIO 1 - MUA → MSA
-# ============================================
+# ---- ESCENARIO 1 ----
 with col1:
-    st.subheader("Escenario 1: MUA → MSA (Puerto 587)")
-    st.markdown("**Cliente de correo → Servidor de su empresa** (requiere autenticación real)")
+    st.subheader("Escenario 1: MUA -> MSA (puerto 587)")
+    st.markdown("**Cliente de correo -> servidor de su empresa** (requiere autenticacion real)")
 
-    # Toggles para Escenario 1
     with st.container(border=True):
         st.markdown("**Opciones**")
-        tls = st.checkbox("TLS completado (STARTTLS exitoso)", 
-                          value=st.session_state.s1_config["tls_completed"],
-                          key="s1_tls")
-        st.session_state.s1_config["tls_completed"] = tls
-
+        tls = st.checkbox("TLS completado (STARTTLS exitoso)", value=True, key="s1_tls")
         if not tls:
-            st.warning("Sin TLS el servidor normalmente rechazará AUTH o no lo ofrecerá.")
+            st.warning("Sin TLS el servidor no ofrece AUTH y rechaza el login con 530.")
 
-    # Controles
-    c1, c2, c3 = st.columns([1,1,1])
-    with c1:
-        if st.button("▶ Avanzar paso", key="s1_step", use_container_width=True):
-            advance_s1()
-    with c2:
-        if st.button("Reiniciar", key="s1_reset", use_container_width=True):
-            reset_s1()
-    with c3:
-        if st.button("Play (auto 5 pasos)", key="s1_play", use_container_width=True):
-            for _ in range(5):
-                advance_s1()
+    s1_cfg = {"tls_completed": tls}
+    s1_convo = build_s1_conversation(s1_cfg)
+    scenario_block("s1", s1_convo, "[CLIENTE] ", "[SERVIDOR] ", "Completar todo")
 
-    # Terminal
-    st.markdown("**Terminal SMTP**")
-    if st.session_state.s1_log:
-        terminal_html = ""
-        for actor, line in st.session_state.s1_log:
-            cls = "client" if actor == "client" else "server"
-            prefix = "[CLIENTE] " if actor == "client" else "[SERVIDOR] "
-            terminal_html += f'<span class="{cls}">{prefix}{line}</span><br>'
-        st.markdown(f'<div class="terminal">{terminal_html}</div>', unsafe_allow_html=True)
-    else:
-        st.info("Haz clic en 'Avanzar paso' para comenzar.")
-
-    # Explicación de la última acción
-    if st.session_state.s1_phase > 0:
-        last_turn = get_s1_turn(st.session_state.s1_phase - 1, st.session_state.s1_config)
-        st.caption(last_turn.get("explanation", ""))
-
-# ============================================
-# ESCENARIO 2 - MTA → MTA
-# ============================================
+# ---- ESCENARIO 2 ----
 with col2:
-    st.subheader("Escenario 2: MTA → MTA (Puerto 25)")
-    st.markdown("**Servidor de origen → Servidor de destino** (sin autenticación con credenciales)")
+    st.subheader("Escenario 2: MTA -> MTA (puerto 25)")
+    st.markdown("**Servidor de origen -> servidor de destino** (sin credenciales; confianza por DNS/IP)")
 
-    # Toggles para Escenario 2 - ESTO ES LO QUE EL USUARIO QUERÍA
     with st.container(border=True):
-        st.markdown("**Opciones de verificación (marca y avanza)**")
-
-        use_tls = st.checkbox("Usar TLS (STARTTLS)", 
-                              value=st.session_state.s2_config["use_tls"], key="s2_tls")
-        st.session_state.s2_config["use_tls"] = use_tls
-
-        spf = st.checkbox("SPF pasa (IP autorizada para el dominio del MAIL FROM)", 
-                          value=st.session_state.s2_config["spf_pass"], key="s2_spf")
-        st.session_state.s2_config["spf_pass"] = spf
-
-        dkim = st.checkbox("DKIM pasa (firma válida)", 
-                           value=st.session_state.s2_config["dkim_pass"], key="s2_dkim")
-        st.session_state.s2_config["dkim_pass"] = dkim
-
-        dmarc = st.selectbox("Política DMARC", 
-                             ["none", "quarantine", "reject"],
-                             index=["none", "quarantine", "reject"].index(st.session_state.s2_config["dmarc_policy"]),
-                             key="s2_dmarc")
-        st.session_state.s2_config["dmarc_policy"] = dmarc
-
-        spoof = st.checkbox("SPF-bypass + Spoof (MAIL FROM del atacante, From: header legítimo)", 
-                            value=st.session_state.s2_config["spf_bypass_spoof"], key="s2_spoof")
-        st.session_state.s2_config["spf_bypass_spoof"] = spoof
+        st.markdown("**Opciones de verificacion**")
+        use_tls = st.checkbox("Usar TLS (STARTTLS oportunista)", value=True, key="s2_tls")
+        spf = st.checkbox("SPF pasa (IP autorizada para el dominio del envelope)", value=True, key="s2_spf")
+        dkim = st.checkbox("DKIM pasa (firma valida)", value=True, key="s2_dkim")
+        dmarc = st.selectbox("Politica DMARC publicada por el dominio del From:",
+                             ["none", "quarantine", "reject"], index=0, key="s2_dmarc")
+        spoof = st.checkbox("SPF-bypass + Spoof (envelope del atacante, From: header suplantado)",
+                            value=False, key="s2_spoof")
 
         if spoof:
             st.info(
-                "La conexión viene de la IP **203.0.113.45**, cuyo **reverse DNS** es `mail.evil-reverso.com`. "
-                "Ese dominio tiene SPF que autoriza explícitamente la IP. "
-                "En la conversación aparecerá exactamente: **MAIL FROM: atacante@mail.evil-reverso.com** "
-                "y **RCPT TO: destino@cualquierdominio.com** (estos son los valores del envelope que procesa el servidor de correo). "
-                "Sin embargo, en los headers del mensaje (DATA) se identifica como `From: \"CEO\" <ceo@empresa-legitima.com>`. "
-                "Servidores grandes suelen detectar la discrepancia entre envelope y headers (aunque no todos lo hacen)."
+                "Conexion desde **203.0.113.45** con reverse DNS `mail.evil-reverso.com`, dominio cuyo SPF "
+                "autoriza esa IP. El **envelope** sera `atacante@mail.evil-reverso.com` (SPF pasa), pero el "
+                "**From: header** dira `CEO <ceo@empresa-legitima.com>`. Aca el selector DMARC representa la "
+                "politica de **empresa-legitima.com** (el dominio suplantado): es lo que decide si el spoof entra."
             )
-
         if not use_tls:
-            st.warning("Sin TLS el canal queda en texto claro (común pero inseguro en puerto 25).")
+            st.warning("Sin TLS el canal va en texto claro (comun en el puerto 25, pero interceptable).")
+        if not spoof and not spf and not dkim and dmarc == "none":
+            st.warning("SPF y DKIM fallan y DMARC=none: el correo entra igual. Es por que p=none no protege, "
+                       "solo monitorea.")
 
-    # Controles
-    c1, c2, c3 = st.columns([1,1,1])
-    with c1:
-        if st.button("▶ Avanzar paso", key="s2_step", use_container_width=True):
-            advance_s2()
-    with c2:
-        if st.button("Reiniciar", key="s2_reset", use_container_width=True):
-            reset_s2()
-    with c3:
-        if st.button("Play (auto)", key="s2_play", use_container_width=True):
-            for _ in range(6):
-                advance_s2()
-
-    # Terminal
-    st.markdown("**Terminal SMTP**")
-    if st.session_state.s2_log:
-        terminal_html = ""
-        for actor, line in st.session_state.s2_log:
-            cls = "client" if actor == "client" else "server"
-            prefix = "[MTA-ORIGEN] " if actor == "client" else "[MTA-DESTINO] "
-            terminal_html += f'<span class="{cls}">{prefix}{line}</span><br>'
-        st.markdown(f'<div class="terminal">{terminal_html}</div>', unsafe_allow_html=True)
-    else:
-        st.info("Marca las opciones de arriba y avanza. La conversación cambia según lo que marques.")
-
-    # Explicación última
-    if st.session_state.s2_phase > 0:
-        last_turn = get_s2_turn(st.session_state.s2_phase - 1, st.session_state.s2_config)
-        st.caption(last_turn.get("explanation", ""))
+    s2_cfg = {
+        "use_tls": use_tls,
+        "spf_pass": spf,
+        "dkim_pass": dkim,
+        "dmarc_policy": dmarc,
+        "spf_bypass_spoof": spoof,
+    }
+    s2_convo = build_s2_conversation(s2_cfg)
+    scenario_block("s2", s2_convo, "[MTA-ORIGEN] ", "[MTA-DESTINO] ", "Completar todo")
 
 # ============================================
-# DIAGRAMA SIMPLE (compartido)
+# DIAGRAMA CONCEPTUAL
 # ============================================
 st.divider()
 st.subheader("Diagrama conceptual")
-
 col_a, col_b = st.columns(2)
-
 with col_a:
     st.markdown("""
-    **MUA → MSA**
+    **MUA -> MSA**
     ```
-    [Cliente de correo]  ──(587 + TLS + AUTH)──▶  [Servidor de la empresa]
+    [Cliente]  --(587 + TLS + AUTH)-->  [Servidor de la empresa]
     ```
-    Requiere credenciales reales + TLS obligatorio.
+    Credenciales reales + TLS obligatorio para autenticar.
     """)
-
 with col_b:
     st.markdown("""
-    **MTA → MTA**
+    **MTA -> MTA**
     ```
-    [MTA Origen]  ──(25, opcional TLS)──▶  [MTA Destino]
-                         │
-                    SPF / DKIM / DMARC
-                    (sin usuario/contraseña)
+    [MTA Origen]  --(25, TLS opcional)-->  [MTA Destino]
+                          |
+                 SPF / DKIM / DMARC  (sin usuario/contrasena)
     ```
-    Confianza basada en DNS + IP + reputación.
+    Confianza por DNS + IP + reputacion. DMARC valida *alignment* del From:.
     """)
 
 # ============================================
-# LEYENDA EDUCATIVA
+# LEYENDA
 # ============================================
-with st.expander("¿Por qué la conversación cambia según las opciones?"):
+with st.expander("Por que la conversacion cambia (y quien decide cada cosa)"):
     st.markdown("""
-    - **Sin TLS (MTA→MTA)**: En puerto 25 el STARTTLS es opcional. Si no se usa, todo viaja en claro.
-    - **SPF falla**: El MAIL FROM no pasa la validación de la IP contra el registro SPF del dominio.
-    - **DKIM falla**: La firma criptográfica del mensaje no valida.
-    - **DMARC p=reject**: Si SPF y/o DKIM fallan (o no alinean), el servidor rechaza el mensaje.
-    - **SPF-bypass + Spoof**: 
-      - La conexión viene de una IP con **reverse DNS válido** (`mail.evil-reverso.com`).
-      - Ese dominio tiene **SPF que autoriza la IP**.
-      - En la terminal verás: **MAIL FROM: atacante@mail.evil-reverso.com**
-      - y **RCPT TO: destino@cualquierdominio.com** (valores que el servidor lee del envelope).
-      - Pero en los **headers del mail** (From:) se identifica como `CEO <ceo@empresa-legitima.com>`.
-      - Servidores grandes suelen detectar la discrepancia entre el *envelope* y los *headers*. Algunos más permisivos pueden no hacerlo y entregar el correo.
-    - **MUA-MSA**: La autenticación con credenciales **solo** se permite después de TLS. Sin TLS el servidor rechaza o no ofrece AUTH.
+- **SPF** valida la IP de origen contra el registro del dominio del **envelope** (MAIL FROM). Mira el sobre, no el From:.
+- **DKIM** firma criptograficamente el mensaje con la clave del dominio `d=`. Sin la clave privada no se puede firmar.
+- **DMARC** exige *alignment*: que el dominio del **From: header** coincida con el dominio validado por SPF y/o por DKIM.
+  Si no alinea, se aplica la **politica que publica el dominio del From:** (`none` monitorea, `quarantine` manda a spam, `reject` rechaza).
+- **Caso spoof**: el atacante pasa SPF con **su propio** dominio (`evil-reverso.com`), pero el From: dice `empresa-legitima.com`.
+  Como no alinea, el correo se frena **solo si `empresa-legitima.com` publica DMARC con enforcement**. No depende de que el receptor sea "grande".
+- **DKIM rescata a SPF**: si SPF falla pero DKIM alinea, DMARC pasa igual. Por eso DKIM con alignment es clave.
+- **MUA->MSA**: la autenticacion con credenciales solo se ofrece/acepta sobre TLS. Sin TLS, el servidor responde 530.
     """)
 
-st.caption("Archivo único Python + Streamlit. Cambia las opciones en tiempo real y la conversación se adapta.")
+st.caption("Archivo unico Python + Streamlit. La conversacion se deriva de las opciones, no se acumula.")
