@@ -1,0 +1,1877 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulación SMTP • Cliente-Servidor y Servidor-Servidor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+        
+        :root {
+            --font-sans: 'Inter', system_ui, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+        }
+        
+        body {
+            font-family: var(--font-sans);
+        }
+        
+        .terminal {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        
+        .terminal-line {
+            padding: 2px 8px;
+            margin: 1px 0;
+            border-radius: 3px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .client-line {
+            color: #60a5fa;
+            background-color: rgba(59, 130, 246, 0.08);
+        }
+        
+        .server-line {
+            color: #34d399;
+            background-color: rgba(52, 211, 153, 0.08);
+        }
+        
+        .smtp-box {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .smtp-box.active {
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+            transform: translateY(-1px);
+        }
+        
+        .connection-line {
+            transition: all 0.3s ease;
+        }
+        
+        .flow-dot {
+            transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .log-container {
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 #1f2937;
+        }
+        
+        .step-button {
+            transition: all 0.1s ease;
+        }
+        
+        .check-item {
+            transition: all 0.3s ease;
+        }
+        
+        .check-item.active {
+            background-color: rgba(52, 211, 153, 0.1);
+            border-color: #34d399;
+        }
+        
+        .section-header {
+            font-size: 1.05rem;
+            letter-spacing: -0.025em;
+        }
+        
+        .smtp-command {
+            font-weight: 500;
+        }
+        
+        .explanation-box {
+            font-size: 0.875rem;
+            line-height: 1.4;
+        }
+        
+        .mono {
+            font-family: var(--font-mono);
+        }
+        
+        .mode-btn.active {
+            font-weight: 600;
+            box-shadow: 0 0 0 1px currentColor;
+        }
+    </style>
+</head>
+<body class="bg-zinc-950 text-zinc-200">
+    <div class="max-w-[1280px] mx-auto px-6 py-8">
+        <!-- Header -->
+        <div class="flex items-start justify-between mb-8">
+            <div>
+                <div class="flex items-center gap-x-3">
+                    <div class="w-11 h-11 bg-emerald-500 rounded-2xl flex items-center justify-center">
+                        <i class="fa-solid fa-envelope text-white text-3xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-4xl font-semibold tracking-tighter">Simulación SMTP</h1>
+                        <p class="text-zinc-400 mt-1">Cómo viaja realmente un correo electrónico</p>
+                    </div>
+                </div>
+            </div>
+            <div class="text-right text-sm">
+                <div class="px-3 py-1 bg-zinc-900 border border-zinc-800 rounded-full inline-flex items-center gap-x-2 text-emerald-400">
+                    <i class="fa-solid fa-graduation-cap"></i>
+                    <span class="font-medium">Enfoque educativo</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Intro -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 mb-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <h2 class="font-semibold text-lg mb-2">Dos formas muy diferentes de "autenticar"</h2>
+                    <p class="text-zinc-400 text-[15px]">
+                        Esta simulación muestra los dos flujos reales del correo electrónico. 
+                        El primer escenario usa <strong class="text-blue-400">autenticación formal</strong> (usuario + contraseña + TLS). 
+                        El segundo escenario <strong class="text-emerald-400">no usa autenticación</strong> con credenciales. 
+                        La confianza se basa en DNS, IP y registros públicos.
+                    </p>
+                </div>
+                <div class="text-sm bg-zinc-950 border border-zinc-800 rounded-2xl p-4">
+                    <div class="flex items-center gap-x-2 text-emerald-400 mb-2">
+                        <i class="fa-solid fa-lightbulb"></i>
+                        <span class="font-semibold">Lo más importante de entender</span>
+                    </div>
+                    <p class="text-zinc-400">
+                        Entre servidores de correo (MTA ↔ MTA) <strong>no se pide usuario ni contraseña</strong>. 
+                        El servidor receptor decide aceptar el mensaje porque la IP + el nombre declarado + los registros SPF/DKIM demuestran que el remitente está autorizado.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ESCENARIO 1 -->
+        <div class="mb-10">
+            <div class="flex items-center gap-x-3 mb-3">
+                <div class="px-4 py-1.5 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-2xl text-sm font-semibold flex items-center gap-x-2">
+                    <i class="fa-solid fa-user"></i>
+                    <span>ESCENARIO 1</span>
+                </div>
+                <h2 class="text-2xl font-semibold tracking-tight">MUA → MSA (Cliente a Servidor de Correo)</h2>
+                <div class="ml-auto text-xs px-3 py-1 bg-zinc-900 border border-zinc-700 rounded-full font-mono text-zinc-400">Puerto 587 + STARTTLS</div>
+            </div>
+            
+            <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
+                <div class="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                    
+                    <!-- Diagrama Escenario 1 -->
+                    <div class="xl:col-span-5">
+                        <div class="text-xs uppercase tracking-widest font-semibold text-zinc-500 mb-2 px-1">Diagrama del flujo</div>
+                        
+                        <div class="bg-zinc-950 border border-zinc-800 rounded-2xl p-5">
+                            <!-- SVG Connection -->
+                            <div class="flex items-center justify-between gap-4">
+                                <!-- Cliente -->
+                                <div id="s1-left-box"
+                                     class="smtp-box flex-1 border border-zinc-700 bg-zinc-900 rounded-2xl p-4 text-center min-w-[140px]">
+                                    <div class="flex justify-center mb-2">
+                                        <i class="fa-solid fa-laptop text-blue-400 text-2xl"></i>
+                                    </div>
+                                    <div class="font-semibold">Cliente de correo</div>
+                                    <div class="text-xs text-zinc-500 mt-0.5">MUA</div>
+                                    <div id="s1-left-status" 
+                                         class="mt-2 text-[10px] font-mono px-2 py-0.5 bg-zinc-800 rounded inline-block">mi-computadora.local</div>
+                                </div>
+
+                                <!-- Conexión -->
+                                <div class="flex flex-col items-center w-28 relative">
+                                    <div class="text-[10px] text-zinc-500 mb-1 font-medium">TCP + TLS</div>
+                                    
+                                    <svg id="s1-connection-svg" width="110" height="42" class="overflow-visible">
+                                        <!-- Línea base -->
+                                        <line x1="8" y1="21" x2="102" y2="21" 
+                                              stroke="#3f3f46" stroke-width="6" stroke-linecap="round"/>
+                                        <!-- Línea activa (se colorea) -->
+                                        <line id="s1-connection-active" x1="8" y1="21" x2="102" y2="21" 
+                                              stroke="#3b82f6" stroke-width="6" stroke-linecap="round" 
+                                              stroke-opacity="0"/>
+                                        
+                                        <!-- Punto viajero -->
+                                        <circle id="s1-flow-dot" cx="8" cy="21" r="5.5" fill="#3b82f6" opacity="0"/>
+                                    </svg>
+                                    
+                                    <div class="flex items-center gap-x-1.5 mt-0.5">
+                                        <div id="s1-tls-badge" 
+                                             class="hidden items-center gap-x-1 text-[10px] px-2 py-px bg-emerald-500/10 text-emerald-400 rounded border border-emerald-500/30">
+                                            <i class="fa-solid fa-lock text-[9px]"></i>
+                                            <span class="font-medium">TLS</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Servidor -->
+                                <div id="s1-right-box"
+                                     class="smtp-box flex-1 border border-zinc-700 bg-zinc-900 rounded-2xl p-4 text-center min-w-[140px]">
+                                    <div class="flex justify-center mb-2">
+                                        <i class="fa-solid fa-server text-emerald-400 text-2xl"></i>
+                                    </div>
+                                    <div class="font-semibold">Servidor de correo</div>
+                                    <div class="text-xs text-zinc-500 mt-0.5">MSA</div>
+                                    <div id="s1-right-status" 
+                                         class="mt-2 text-[10px] font-mono px-2 py-0.5 bg-zinc-800 rounded inline-block">smtp.ejemplo.com:587</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Terminal + Controles Escenario 1 -->
+                    <div class="xl:col-span-7">
+                        <!-- Controles -->
+                        <div class="flex items-center gap-x-2 mb-2">
+                            <button onclick="s1Step()"
+                                    class="step-button flex items-center gap-x-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-2xl text-sm font-medium">
+                                <i class="fa-solid fa-step-forward"></i>
+                                <span>Paso</span>
+                            </button>
+                            
+                            <button onclick="s1PlayPause()" id="s1-play-btn"
+                                    class="step-button flex items-center gap-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-2xl text-sm font-semibold">
+                                <i class="fa-solid fa-play mr-1" id="s1-play-icon"></i>
+                                <span id="s1-play-text">Play</span>
+                            </button>
+                            
+                            <button onclick="s1Reset()"
+                                    class="step-button flex items-center gap-x-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-2xl text-sm font-medium">
+                                <i class="fa-solid fa-undo"></i>
+                                <span>Reiniciar</span>
+                            </button>
+                            
+                            <div class="ml-auto flex items-center gap-x-2 text-xs text-zinc-500">
+                                <span>Velocidad</span>
+                                <input type="range" id="s1-speed" min="400" max="1600" step="100" value="850" 
+                                       class="w-24 accent-blue-500" oninput="s1SpeedChanged()">
+                                <span id="s1-speed-label" class="font-mono w-8 text-right">850ms</span>
+                            </div>
+                        </div>
+
+                        <!-- Modos TLS para MUA-MSA -->
+                        <div class="flex items-center gap-x-1.5 flex-wrap mb-3">
+                            <span class="text-[10px] text-zinc-500 mr-1">TLS (MUA→MSA):</span>
+                            
+                            <button onclick="s1SetMode('tls-required')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-blue-600/40 bg-blue-600/10 hover:bg-blue-600/20 text-blue-300 active">Con TLS (normal)</button>
+                            
+                            <button onclick="s1SetMode('no-tls')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-amber-500/60 text-zinc-400 hover:text-amber-300">Sin TLS (inseguro)</button>
+                            
+                            <button onclick="s1SetMode('tls-refused')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-red-500/60 text-zinc-400 hover:text-red-300">STARTTLS rechazado</button>
+                        </div>
+
+                        <!-- Terminal -->
+                        <div class="bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden">
+                            <div class="px-3 py-1.5 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between text-xs">
+                                <div class="flex items-center gap-x-2 font-medium text-zinc-400">
+                                    <i class="fa-solid fa-terminal"></i>
+                                    <span>Terminal SMTP — Puerto 587</span>
+                                </div>
+                                <div class="text-[10px] text-zinc-500">Cliente → Servidor</div>
+                            </div>
+                            <div id="s1-terminal" 
+                                 class="terminal log-container h-[218px] overflow-auto p-3 bg-black text-zinc-300 space-y-px">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Base64 + Explicación -->
+                    <div class="xl:col-span-5">
+                        <div class="text-xs uppercase tracking-widest font-semibold text-zinc-500 mb-2 px-1">Decodificador Base64 (AUTH)</div>
+                        <div id="s1-base64-panel" 
+                             class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 min-h-[108px] text-sm">
+                            <div class="text-zinc-500 text-xs mb-1">Se activa durante la autenticación</div>
+                            <div id="s1-base64-content" class="font-mono text-xs text-zinc-400">
+                                Esperando paso AUTH LOGIN...
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="xl:col-span-7">
+                        <div class="text-xs uppercase tracking-widest font-semibold text-zinc-500 mb-2 px-1">Qué está pasando</div>
+                        <div id="s1-explanation" 
+                             class="explanation-box bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-sm text-zinc-300 min-h-[108px]">
+                            Haz clic en <strong>Paso</strong> o <strong>Play</strong> para comenzar la simulación.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ESCENARIO 2 -->
+        <div class="mb-8">
+            <div class="flex items-center gap-x-3 mb-3">
+                <div class="px-4 py-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-2xl text-sm font-semibold flex items-center gap-x-2">
+                    <i class="fa-solid fa-server"></i>
+                    <span>ESCENARIO 2</span>
+                </div>
+                <h2 class="text-2xl font-semibold tracking-tight">MTA → MTA (Servidor a Servidor)</h2>
+                <div class="ml-auto text-xs px-3 py-1 bg-zinc-900 border border-zinc-700 rounded-full font-mono text-zinc-400">Puerto 25 + STARTTLS</div>
+            </div>
+            
+            <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
+                <div class="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                    
+                    <!-- Diagrama Escenario 2 -->
+                    <div class="xl:col-span-5">
+                        <div class="text-xs uppercase tracking-widest font-semibold text-zinc-500 mb-2 px-1">Diagrama del flujo</div>
+                        
+                        <div class="bg-zinc-950 border border-zinc-800 rounded-2xl p-5">
+                            <div class="flex items-center justify-between gap-4">
+                                <!-- MTA Origen -->
+                                <div id="s2-left-box"
+                                     class="smtp-box flex-1 border border-zinc-700 bg-zinc-900 rounded-2xl p-4 text-center min-w-[140px]">
+                                    <div class="flex justify-center mb-2">
+                                        <i class="fa-solid fa-server text-blue-400 text-2xl"></i>
+                                    </div>
+                                    <div class="font-semibold">MTA Origen</div>
+                                    <div class="text-xs text-zinc-500 mt-0.5">mail.origen.com</div>
+                                    <div id="s2-left-status" 
+                                         class="mt-2 text-[10px] font-mono px-2 py-0.5 bg-zinc-800 rounded inline-block">203.0.113.45</div>
+                                </div>
+
+                                <!-- Conexión -->
+                                <div class="flex flex-col items-center w-28 relative">
+                                    <div class="text-[10px] text-zinc-500 mb-1 font-medium">Puerto 25</div>
+                                    
+                                    <svg id="s2-connection-svg" width="110" height="42" class="overflow-visible">
+                                        <line x1="8" y1="21" x2="102" y2="21" 
+                                              stroke="#3f3f46" stroke-width="6" stroke-linecap="round"/>
+                                        <line id="s2-connection-active" x1="8" y1="21" x2="102" y2="21" 
+                                              stroke="#10b981" stroke-width="6" stroke-linecap="round" 
+                                              stroke-opacity="0"/>
+                                        <circle id="s2-flow-dot" cx="8" cy="21" r="5.5" fill="#10b981" opacity="0"/>
+                                    </svg>
+                                    
+                                    <div class="flex items-center gap-x-1.5 mt-0.5">
+                                        <div id="s2-tls-badge" 
+                                             class="hidden items-center gap-x-1 text-[10px] px-2 py-px bg-emerald-500/10 text-emerald-400 rounded border border-emerald-500/30">
+                                            <i class="fa-solid fa-lock text-[9px]"></i>
+                                            <span class="font-medium">TLS</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- MTA Destino -->
+                                <div id="s2-right-box"
+                                     class="smtp-box flex-1 border border-zinc-700 bg-zinc-900 rounded-2xl p-4 text-center min-w-[140px]">
+                                    <div class="flex justify-center mb-2">
+                                        <i class="fa-solid fa-server text-emerald-400 text-2xl"></i>
+                                    </div>
+                                    <div class="font-semibold">MTA Destino</div>
+                                    <div class="text-xs text-zinc-500 mt-0.5">mail.destino.com</div>
+                                    <div id="s2-right-status" 
+                                         class="mt-2 text-[10px] font-mono px-2 py-0.5 bg-zinc-800 rounded inline-block">mail.destino.com:25</div>
+                                </div>
+                            </div>
+                            
+                            <!-- DNS Box -->
+                            <div class="mt-3 pt-3 border-t border-zinc-800">
+                                <div class="flex items-center gap-x-2 text-xs">
+                                    <div class="flex items-center gap-x-1.5 px-2.5 py-1 bg-zinc-900 border border-zinc-700 rounded-xl text-emerald-300">
+                                        <i class="fa-solid fa-globe text-xs"></i>
+                                        <span class="font-semibold">DNS</span>
+                                    </div>
+                                    <div id="s2-dns-status" class="text-[10px] text-zinc-400 font-mono">MX + SPF TXT</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Terminal + Controles Escenario 2 -->
+                    <div class="xl:col-span-7">
+                        <div class="flex items-center gap-x-2 mb-2">
+                            <button onclick="s2Step()"
+                                    class="step-button flex items-center gap-x-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-2xl text-sm font-medium">
+                                <i class="fa-solid fa-step-forward"></i>
+                                <span>Paso</span>
+                            </button>
+                            
+                            <button onclick="s2PlayPause()" id="s2-play-btn"
+                                    class="step-button flex items-center gap-x-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-2xl text-sm font-semibold">
+                                <i class="fa-solid fa-play mr-1" id="s2-play-icon"></i>
+                                <span id="s2-play-text">Play</span>
+                            </button>
+                            
+                            <button onclick="s2Reset()"
+                                    class="step-button flex items-center gap-x-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-2xl text-sm font-medium">
+                                <i class="fa-solid fa-undo"></i>
+                                <span>Reiniciar</span>
+                            </button>
+                            
+                            <div class="ml-auto flex items-center gap-x-2 text-xs text-zinc-500">
+                                <span>Velocidad</span>
+                                <input type="range" id="s2-speed" min="400" max="1600" step="100" value="850" 
+                                       class="w-24 accent-emerald-500" oninput="s2SpeedChanged()">
+                                <span id="s2-speed-label" class="font-mono w-8 text-right">850ms</span>
+                            </div>
+                        </div>
+
+                        <!-- Modos de verificación / fallos - al lado de Play (Escenario 2) -->
+                        <div class="flex items-center gap-x-1.5 flex-wrap mb-3">
+                            <span class="text-[10px] text-zinc-500 mr-1">Modos MTA→MTA:</span>
+                            
+                            <button onclick="s2SetMode('normal')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-emerald-600/40 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-300 active">Normal</button>
+                            
+                            <button onclick="s2SetMode('spf-fail')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-red-500/60 text-zinc-400 hover:text-red-300">SPF falla</button>
+                            
+                            <button onclick="s2SetMode('dkim-fail')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-red-500/60 text-zinc-400 hover:text-red-300">DKIM falla</button>
+                            
+                            <button onclick="s2SetMode('dmarc-reject')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-red-500/60 text-zinc-400 hover:text-red-300">DMARC p=reject</button>
+                            
+                            <button onclick="s2SetMode('dmarc-quarantine')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-amber-500/60 text-zinc-400 hover:text-amber-300">DMARC p=quarantine</button>
+                            
+                            <button onclick="s2SetMode('dmarc-none')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-zinc-700 hover:border-amber-500/60 text-zinc-400 hover:text-amber-300">DMARC p=none</button>
+                            
+                            <button onclick="s2SetMode('spf-bypass-spoof')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-purple-600/40 bg-purple-600/10 hover:bg-purple-600/20 text-purple-300">SPF-bypass + Spoof</button>
+
+                            <button onclick="s2SetMode('no-tls')" 
+                                    class="mode-btn text-[11px] px-2.5 py-0.5 rounded-full border border-amber-600/40 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300">Sin TLS</button>
+                        </div>
+
+                        <div class="bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden">
+                            <div class="px-3 py-1.5 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between text-xs">
+                                <div class="flex items-center gap-x-2 font-medium text-zinc-400">
+                                    <i class="fa-solid fa-terminal"></i>
+                                    <span>Terminal SMTP — Puerto 25</span>
+                                </div>
+                                <div class="text-[10px] text-zinc-500">Servidor → Servidor</div>
+                            </div>
+                            <div id="s2-terminal" 
+                                 class="terminal log-container h-[218px] overflow-auto p-3 bg-black text-zinc-300 space-y-px">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Panel de Verificación de Identidad y Autenticación de Dominio -->
+                    <div class="xl:col-span-5">
+                        <div class="flex items-center gap-x-2 mb-2 px-1">
+                            <div class="text-xs uppercase tracking-widest font-semibold text-emerald-400">Verificación de identidad + autenticación de dominio</div>
+                            <div class="text-[10px] px-2 py-px bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded">SIN CREDENCIALES</div>
+                        </div>
+                        
+                        <div id="s2-trust-panel" 
+                             class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 space-y-1.5 text-sm">
+                            <!-- Checks populated by JS -->
+                        </div>
+
+                        <!-- Failure simulation controls -->
+                        <div class="mt-3 pt-3 border-t border-zinc-700">
+                            <div class="text-[10px] uppercase tracking-widest font-semibold text-amber-400 mb-1.5 px-1">Qué pasa si fallan los chequeos (demo)</div>
+                            <div class="flex flex-wrap gap-1.5">
+                                <button onclick="simulateFailure('spf')" 
+                                        class="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-red-900/60 border border-zinc-700 hover:border-red-600/50 rounded-xl text-red-400 transition-colors">SPF falla</button>
+                                <button onclick="simulateFailure('dkim')" 
+                                        class="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-red-900/60 border border-zinc-700 hover:border-red-600/50 rounded-xl text-red-400 transition-colors">DKIM falla</button>
+                                <button onclick="simulateFailure('dmarc-reject')" 
+                                        class="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-red-900/60 border border-zinc-700 hover:border-red-600/50 rounded-xl text-red-400 transition-colors">DMARC p=reject</button>
+                                <button onclick="simulateFailure('no-tls')" 
+                                        class="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-amber-900/60 border border-zinc-700 hover:border-amber-600/50 rounded-xl text-amber-400 transition-colors">Sin TLS</button>
+                            </div>
+                            <div id="s2-failure-result" class="hidden mt-2 text-xs p-2 rounded-xl border"></div>
+                        </div>
+                    </div>
+
+                    <div class="xl:col-span-7">
+                        <div class="text-xs uppercase tracking-widest font-semibold text-zinc-500 mb-2 px-1">Qué está pasando</div>
+                        <div id="s2-explanation" 
+                             class="explanation-box bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-sm text-zinc-300 min-h-[108px]">
+                            Los dos servidores <strong>no intercambian credenciales</strong>. La confianza se basa en DNS (SPF/DKIM/DMARC), la IP de origen y reputación. 
+                            TLS, DKIM y DMARC se verifican en diferentes momentos del flujo.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Comparación final -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-6">
+            <h3 class="font-semibold mb-4 text-lg">Comparación clave: ¿Por qué un caso requiere contraseña y el otro no?</h3>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div class="bg-zinc-950 border border-blue-500/30 rounded-2xl p-4">
+                    <div class="flex items-center gap-x-2 text-blue-400 font-semibold mb-2">
+                        <i class="fa-solid fa-user-check"></i>
+                        <span>Escenario 1 — MUA a MSA</span>
+                    </div>
+                    <ul class="space-y-1.5 text-zinc-300 text-[13.5px]">
+                        <li>• El <strong>cliente</strong> es un usuario final (no un servidor)</li>
+                        <li>• El servidor exige <strong>credenciales reales</strong> (AUTH LOGIN)</li>
+                        <li>• TLS es <strong>obligatorio</strong> antes de enviar la contraseña</li>
+                        <li>• Una vez autenticado, el servidor le da permiso para enviar correo</li>
+                    </ul>
+                </div>
+                
+                <div class="bg-zinc-950 border border-emerald-500/30 rounded-2xl p-4">
+                    <div class="flex items-center gap-x-2 text-emerald-400 font-semibold mb-2">
+                        <i class="fa-solid fa-globe"></i>
+                        <span>Escenario 2 — MTA a MTA</span>
+                    </div>
+                    <ul class="space-y-1.5 text-zinc-300 text-[13.5px]">
+                        <li>• Ambos lados son <strong>servidores de correo</strong> (MTA)</li>
+                        <li>• <strong>No se usa AUTH</strong>. Nadie envía usuario/contraseña</li>
+                        <li>• El receptor valida mediante <strong>DNS público</strong> (SPF, MX) + IP de origen + reputación</li>
+                        <li>• Acepta el correo solo si el destinatario es local o hay política que lo permite</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="mt-4 text-xs text-zinc-400 px-1">
+                Este es el modelo real que usa internet para entregar cientos de miles de millones de correos por día sin que todos los servidores tengan credenciales de todos los demás.
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Tailwind script
+        function initializeTailwind() {
+            document.documentElement.style.setProperty('--accent', '#3b82f6');
+        }
+        
+        // ============================================
+        // ESCENARIO 1 - MUA → MSA (Puerto 587)
+        // ============================================
+        let s1CurrentStep = 0;
+        let s1IsPlaying = false;
+        let s1PlayInterval = null;
+        let s1Speed = 850;
+        let s1CurrentMode = 'tls-required';
+        
+        const s1Steps = [
+            {
+                lines: [
+                    { actor: 'server', text: '220 smtp.ejemplo.com ESMTP Postfix' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor acepta la conexión TCP en el puerto 587 y se presenta. El cliente aún no está autenticado.',
+                sideEffects: { tls: false }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'EHLO mi-computadora.local' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente se identifica. Pide las capacidades del servidor (ESMTP).',
+                sideEffects: { tls: false }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250-smtp.ejemplo.com Hello mi-computadora.local' },
+                    { actor: 'server', text: '250-STARTTLS' },
+                    { actor: 'server', text: '250 8BITMIME' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor responde con sus capacidades. Destaca que soporta STARTTLS (cifrado). Todavía no ofrece AUTH.',
+                sideEffects: { tls: false }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'STARTTLS' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente solicita subir a una conexión cifrada. Esto es obligatorio antes de enviar credenciales.',
+                sideEffects: { tls: false }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '220 2.0.0 Ready to start TLS' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor acepta. A partir de ahora se negocia TLS (el handshake es invisible para nosotros).',
+                sideEffects: { tls: true, startTls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'EHLO mi-computadora.local' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'Después de TLS, el cliente debe saludar nuevamente. Ahora todo viaja cifrado.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250-smtp.ejemplo.com Hello mi-computadora.local' },
+                    { actor: 'server', text: '250-AUTH PLAIN LOGIN' },
+                    { actor: 'server', text: '250 8BITMIME' }
+                ],
+                direction: 'server-to-client',
+                explanation: '¡Importante! Solo después de TLS el servidor ofrece AUTH. Antes era inseguro enviar credenciales.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'AUTH LOGIN' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente elige el método de autenticación LOGIN (usuario y contraseña en Base64).',
+                sideEffects: { tls: true, base64: { show: true, stage: 'start' } }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '334 VXNlcm5hbWU6' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor pide el nombre de usuario. El valor está codificado en Base64 (Username:).',
+                sideEffects: { tls: true, base64: { show: true, encoded: 'VXNlcm5hbWU6', decoded: 'Username:' } }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'Y2FybG9zQGVqZW1wbG8uY29t' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente envía su dirección de correo codificada en Base64.',
+                sideEffects: { tls: true, base64: { show: true, encoded: 'Y2FybG9zQGVqZW1wbG8uY29t', decoded: 'carlos@ejemplo.com' } }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '334 UGFzc3dvcmQ6' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor pide la contraseña (también en Base64: Password:).',
+                sideEffects: { tls: true, base64: { show: true, encoded: 'UGFzc3dvcmQ6', decoded: 'Password:' } }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'bWlwYXNzd29yZDEyMw==' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente envía la contraseña codificada. Todo esto viaja dentro del túnel TLS.',
+                sideEffects: { tls: true, base64: { show: true, encoded: 'bWlwYXNzd29yZDEyMw==', decoded: 'mipassword123' } }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '235 2.7.0 Authentication successful' }
+                ],
+                direction: 'server-to-client',
+                explanation: '¡Autenticación exitosa! El cliente ahora tiene permisos de submission en este servidor.',
+                sideEffects: { tls: true, base64: { show: false } }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'MAIL FROM:<carlos@ejemplo.com>' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente indica quién es el remitente del sobre (envelope sender).',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250 2.1.0 Ok' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor acepta el remitente.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'RCPT TO:<destino@cualquierdominio.com>' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente indica el destinatario. El servidor verificará si permite relay hacia ese dominio.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250 2.1.5 Ok' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'Destinatario aceptado. El correo queda encolado para procesamiento interno.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'DATA' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente quiere comenzar a enviar el contenido del mensaje (headers + cuerpo).',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '354 End data with <CR><LF>.<CR><LF>' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor está listo. El cliente debe terminar el mensaje con una línea que contenga solo un punto.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'From: carlos@ejemplo.com' },
+                    { actor: 'client', text: 'To: destino@cualquierdominio.com' },
+                    { actor: 'client', text: 'Subject: Prueba de simulación SMTP' },
+                    { actor: 'client', text: '' },
+                    { actor: 'client', text: 'Este es el cuerpo del mensaje.' },
+                    { actor: 'client', text: 'Se envía después de la autenticación exitosa.' },
+                    { actor: 'client', text: '.' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente envía los encabezados RFC 5322 + cuerpo + la línea con punto final (.) que termina el DATA.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250 2.0.0 Ok: queued as 98765' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El mensaje fue aceptado por el MSA y encolado para entrega. El trabajo del cliente terminó.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'QUIT' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El cliente cierra la sesión de forma ordenada.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '221 2.0.0 Bye' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor confirma el cierre. Conexión terminada.',
+                sideEffects: { tls: false }
+            }
+        ];
+        
+        function s1SpeedChanged() {
+            s1Speed = parseInt(document.getElementById('s1-speed').value);
+            document.getElementById('s1-speed-label').textContent = s1Speed + 'ms';
+        }
+        
+        function s1AppendLine(line) {
+            const terminal = document.getElementById('s1-terminal');
+            const div = document.createElement('div');
+            div.className = `terminal-line ${line.actor === 'client' ? 'client-line' : 'server-line'}`;
+            
+            const prefix = line.actor === 'client' ? '[CLIENTE] ' : '[SERVIDOR] ';
+            div.innerHTML = `<span class="opacity-75">${prefix}</span>${line.text}`;
+            
+            terminal.appendChild(div);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+        
+        function s1TriggerFlow(direction) {
+            const svg = document.getElementById('s1-connection-svg');
+            const activeLine = document.getElementById('s1-connection-active');
+            const dot = document.getElementById('s1-flow-dot');
+            
+            const isClientToServer = direction === 'client-to-server';
+            
+            // Reset
+            activeLine.setAttribute('stroke-opacity', '0.9');
+            activeLine.setAttribute('stroke', isClientToServer ? '#3b82f6' : '#34d399');
+            
+            dot.setAttribute('fill', isClientToServer ? '#3b82f6' : '#34d399');
+            dot.setAttribute('opacity', '1');
+            
+            // Posición inicial y final
+            const startX = isClientToServer ? 8 : 102;
+            const endX = isClientToServer ? 102 : 8;
+            
+            dot.setAttribute('cx', startX);
+            
+            // Animar con requestAnimationFrame para control total
+            const duration = Math.max(420, s1Speed * 0.75);
+            const startTime = performance.now();
+            
+            function animate(now) {
+                const elapsed = now - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                
+                // Ease out
+                const eased = 1 - Math.pow(1 - progress, 2);
+                const currentX = startX + (endX - startX) * eased;
+                
+                dot.setAttribute('cx', currentX);
+                
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    // Terminar
+                    setTimeout(() => {
+                        dot.setAttribute('opacity', '0');
+                        activeLine.setAttribute('stroke-opacity', '0.25');
+                    }, 180);
+                }
+            }
+            
+            requestAnimationFrame(animate);
+        }
+        
+        function s1UpdateTLS(active) {
+            const badge = document.getElementById('s1-tls-badge');
+            const leftBox = document.getElementById('s1-left-box');
+            const rightBox = document.getElementById('s1-right-box');
+            
+            if (active) {
+                badge.classList.remove('hidden');
+                badge.classList.add('flex');
+                leftBox.classList.add('border-blue-400/60');
+                rightBox.classList.add('border-emerald-400/60');
+            } else {
+                badge.classList.add('hidden');
+                badge.classList.remove('flex');
+                leftBox.classList.remove('border-blue-400/60');
+                rightBox.classList.remove('border-emerald-400/60');
+            }
+        }
+        
+        function s1UpdateBase64(sideEffect) {
+            const panel = document.getElementById('s1-base64-panel');
+            const content = document.getElementById('s1-base64-content');
+            
+            if (!sideEffect || !sideEffect.base64) {
+                return;
+            }
+            
+            const b = sideEffect.base64;
+            
+            if (b.show === false) {
+                content.innerHTML = `<span class="text-emerald-400">✓ Autenticación completada</span>`;
+                panel.style.borderColor = '#166534';
+                return;
+            }
+            
+            if (b.stage === 'start') {
+                content.innerHTML = `Esperando desafío del servidor...`;
+                return;
+            }
+            
+            if (b.encoded && b.decoded) {
+                content.innerHTML = `
+                    <div class="space-y-1">
+                        <div><span class="text-amber-400">Codificado:</span> <span class="font-semibold">${b.encoded}</span></div>
+                        <div><span class="text-emerald-400">Decodificado:</span> <span class="font-semibold text-white">${b.decoded}</span></div>
+                    </div>
+                `;
+                panel.style.borderColor = '#166534';
+            }
+        }
+        
+        function s1UpdateExplanation(text) {
+            document.getElementById('s1-explanation').innerHTML = text;
+        }
+        
+        function s1HighlightBoxes(direction) {
+            const left = document.getElementById('s1-left-box');
+            const right = document.getElementById('s1-right-box');
+            
+            left.classList.remove('active');
+            right.classList.remove('active');
+            
+            if (direction === 'client-to-server') {
+                left.classList.add('active');
+                setTimeout(() => left.classList.remove('active'), 900);
+            } else {
+                right.classList.add('active');
+                setTimeout(() => right.classList.remove('active'), 900);
+            }
+        }
+        
+        function s1ExecuteStep(stepIndex) {
+            if (stepIndex >= s1Steps.length) {
+                s1StopPlay();
+                return;
+            }
+            
+            const step = s1Steps[stepIndex];
+            const terminal = document.getElementById('s1-terminal');
+            
+            // Agregar líneas al terminal
+            step.lines.forEach(line => {
+                s1AppendLine(line);
+            });
+            
+            // Animación de flujo
+            if (step.direction) {
+                s1TriggerFlow(step.direction);
+                s1HighlightBoxes(step.direction);
+            }
+            
+            // Efectos laterales
+            if (step.sideEffects) {
+                if (step.sideEffects.hasOwnProperty('tls')) {
+                    s1UpdateTLS(step.sideEffects.tls);
+                }
+                if (step.sideEffects.base64) {
+                    s1UpdateBase64(step.sideEffects);
+                }
+            }
+            
+            // Explicación
+            s1UpdateExplanation(step.explanation);
+            
+            s1CurrentStep = stepIndex + 1;
+            
+            // Marcar final
+            if (s1CurrentStep >= s1Steps.length) {
+                setTimeout(() => {
+                    s1StopPlay();
+                    const term = document.getElementById('s1-terminal');
+                    const endMsg = document.createElement('div');
+                    endMsg.className = 'text-emerald-400 text-xs mt-2 px-2';
+                    endMsg.textContent = '— Simulación finalizada —';
+                    term.appendChild(endMsg);
+                }, 200);
+            }
+        }
+        
+        function s1Step() {
+            if (s1CurrentStep >= s1Steps.length) return;
+            s1StopPlay();
+            s1ExecuteStep(s1CurrentStep);
+        }
+        
+        function s1Play() {
+            if (s1CurrentStep >= s1Steps.length) {
+                s1Reset();
+            }
+            
+            s1IsPlaying = true;
+            const btn = document.getElementById('s1-play-btn');
+            const icon = document.getElementById('s1-play-icon');
+            const text = document.getElementById('s1-play-text');
+            
+            btn.classList.remove('bg-blue-600', 'hover:bg-blue-500');
+            btn.classList.add('bg-amber-600', 'hover:bg-amber-500');
+            icon.classList.remove('fa-play');
+            icon.classList.add('fa-pause');
+            text.textContent = 'Pausa';
+            
+            function playNext() {
+                if (!s1IsPlaying || s1CurrentStep >= s1Steps.length) {
+                    s1StopPlay();
+                    return;
+                }
+                
+                s1ExecuteStep(s1CurrentStep);
+                
+                s1PlayInterval = setTimeout(playNext, s1Speed);
+            }
+            
+            playNext();
+        }
+        
+        function s1StopPlay() {
+            s1IsPlaying = false;
+            if (s1PlayInterval) {
+                clearTimeout(s1PlayInterval);
+                s1PlayInterval = null;
+            }
+            
+            const btn = document.getElementById('s1-play-btn');
+            const icon = document.getElementById('s1-play-icon');
+            const text = document.getElementById('s1-play-text');
+            
+            btn.classList.remove('bg-amber-600', 'hover:bg-amber-500');
+            btn.classList.add('bg-blue-600', 'hover:bg-blue-500');
+            icon.classList.remove('fa-pause');
+            icon.classList.add('fa-play');
+            text.textContent = 'Play';
+        }
+        
+        function s1PlayPause() {
+            if (s1IsPlaying) {
+                s1StopPlay();
+            } else {
+                s1Play();
+            }
+        }
+        
+        function s1Reset() {
+            s1StopPlay();
+            s1CurrentStep = 0;
+            
+            // Limpiar terminal
+            document.getElementById('s1-terminal').innerHTML = '';
+            
+            // Reset visuales
+            document.getElementById('s1-flow-dot').setAttribute('opacity', '0');
+            document.getElementById('s1-connection-active').setAttribute('stroke-opacity', '0');
+            
+            document.getElementById('s1-tls-badge').classList.add('hidden');
+            document.getElementById('s1-tls-badge').classList.remove('flex');
+            
+            document.getElementById('s1-left-box').classList.remove('border-blue-400/60');
+            document.getElementById('s1-right-box').classList.remove('border-emerald-400/60');
+            
+            // Reset base64
+            const base64Content = document.getElementById('s1-base64-content');
+            base64Content.innerHTML = 'Esperando paso AUTH LOGIN...';
+            document.getElementById('s1-base64-panel').style.borderColor = '';
+            
+            // Reset explicación
+            document.getElementById('s1-explanation').innerHTML = 
+                'Haz clic en <strong>Paso</strong> o <strong>Play</strong> para comenzar la simulación.';
+            
+            // Reset status boxes
+            document.getElementById('s1-left-status').textContent = 'mi-computadora.local';
+            document.getElementById('s1-right-status').textContent = 'smtp.ejemplo.com:587';
+        }
+
+        function s1SetMode(mode) {
+            s1CurrentMode = mode;
+            
+            // Visual feedback en botones
+            document.querySelectorAll('#s1-play-btn ~ * .mode-btn, .mode-btn').forEach(btn => {
+                // rough clear for s1 buttons
+            });
+            
+            s1Reset();
+            
+            const exp = document.getElementById('s1-explanation');
+            
+            if (mode === 'tls-required') {
+                exp.innerHTML = 'Modo normal: TLS obligatorio antes de AUTH. El servidor solo ofrece credenciales después del cifrado.';
+            } else if (mode === 'no-tls') {
+                exp.innerHTML = '<strong>Modo inseguro (Sin TLS)</strong>: El cliente intenta AUTH sin STARTTLS. En un servidor moderno sería rechazado o las credenciales viajarían en claro.';
+                // Marcar que no hay candado
+                document.getElementById('s1-tls-badge').classList.add('hidden');
+            } else if (mode === 'tls-refused') {
+                exp.innerHTML = '<strong>STARTTLS rechazado</strong> por el servidor. El cliente no puede subir a canal seguro y el servidor no debe ofrecer AUTH.';
+            }
+        }
+        
+        // ============================================
+        // ESCENARIO 2 - MTA → MTA (Puerto 25)
+        // ============================================
+        let s2CurrentStep = 0;
+        let s2IsPlaying = false;
+        let s2PlayInterval = null;
+        let s2Speed = 850;
+        let s2CurrentMode = 'normal';
+        
+        const s2TrustChecks = [
+            // Identidad de la conexión
+            { id: 'ip', label: 'Conexión entrante desde IP 203.0.113.45', category: 'identidad', done: false },
+            { id: 'ehlo', label: 'EHLO declara identidad: mail.origen.com', category: 'identidad', done: false },
+            // Resolución
+            { id: 'mx', label: 'DNS MX resuelto para cualquierdominio.com', category: 'entrega', done: false },
+            // Autenticación de dominio (sin credenciales)
+            { id: 'spf', label: 'SPF TXT para ejemplo.com → IP autorizada (PASS)', category: 'autenticacion', done: false },
+            { id: 'dkim', label: 'DKIM verificado (firma en headers + clave pública DNS)', category: 'autenticacion', done: false },
+            { id: 'dmarc', label: 'DMARC: política satisfecha (SPF + DKIM alineados)', category: 'autenticacion', done: false },
+            // Seguridad del canal
+            { id: 'tls', label: 'Canal cifrado con STARTTLS (TLS negociado)', category: 'seguridad', done: false },
+            // Modelo de confianza
+            { id: 'noauth', label: 'Sin AUTH (no se pidieron credenciales)', category: 'modelo', done: false },
+            { id: 'reputation', label: 'Reputación de IP y dominio aceptable', category: 'modelo', done: false }
+        ];
+        
+        const s2Steps = [
+            {
+                lines: [
+                    { actor: 'server', text: '220 mail.destino.com ESMTP Postfix' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El MTA destino acepta la conexión en el puerto 25 (estándar para transferencia entre servidores).',
+                sideEffects: { 
+                    tls: false,
+                    trust: ['ip']
+                }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'EHLO mail.origen.com' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El MTA origen se identifica con su nombre de dominio completo (FQDN). Esto es importante para la verificación posterior.',
+                sideEffects: { 
+                    tls: false,
+                    trust: ['ehlo']
+                }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250-mail.destino.com Hello mail.origen.com' },
+                    { actor: 'server', text: '250-STARTTLS' },
+                    { actor: 'server', text: '250 8BITMIME' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El servidor destino responde. Ofrece STARTTLS de forma opcional (común en MTAs modernos).',
+                sideEffects: { 
+                    tls: false,
+                    trust: ['mx']   // simulamos que el MX ya se resolvió para llegar aquí
+                }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'STARTTLS' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El origen también prefiere cifrar la comunicación (buena práctica).',
+                sideEffects: { tls: false }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '220 2.0.0 Ready to start TLS' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'Se negocia TLS. A partir de este momento todo el diálogo viaja cifrado.',
+                sideEffects: { tls: true, startTls: true, trust: ['tls'] }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'EHLO mail.origen.com' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'Segundo EHLO dentro del túnel TLS.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250-mail.destino.com Hello mail.origen.com' },
+                    { actor: 'server', text: '250 8BITMIME' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'Nota importante: el servidor destino NO ofrece AUTH en este punto. No espera credenciales de otro MTA.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'MAIL FROM:<carlos@ejemplo.com>' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El origen declara el remitente real del mensaje. Aquí el destino suele consultar SPF.',
+                sideEffects: { 
+                    tls: true,
+                    trust: ['spf']
+                }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250 2.1.0 Ok' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El remitente es aceptado. En un servidor real aquí se evaluó el registro SPF del dominio ejemplo.com.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'RCPT TO:<destino@cualquierdominio.com>' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'El origen indica el destinatario final. El destino aceptará solo si gestiona ese dominio.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250 2.1.5 Ok' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'Aceptado porque @cualquierdominio.com es un dominio local del servidor destino.',
+                sideEffects: { 
+                    tls: true,
+                    trust: ['noauth']
+                }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'DATA' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'Se inicia la transferencia del mensaje completo (incluyendo firma DKIM).',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '354 End data with <CR><LF>.<CR><LF>' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'Servidor listo para recibir el cuerpo del mensaje.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'From: carlos@ejemplo.com' },
+                    { actor: 'client', text: 'To: destino@cualquierdominio.com' },
+                    { actor: 'client', text: 'Subject: Prueba entre servidores' },
+                    { actor: 'client', text: '' },
+                    { actor: 'client', text: 'Mensaje enviado desde mail.origen.com hacia mail.destino.com.' },
+                    { actor: 'client', text: 'Este correo viaja sin autenticación con credenciales.' },
+                    { actor: 'client', text: 'DKIM-Signature: v=1; a=rsa-sha256; ...' },
+                    { actor: 'client', text: '.' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'Se transfiere el mensaje completo. Incluye la firma DKIM en los encabezados. El receptor verificará la firma usando la clave pública publicada en DNS del dominio del remitente.',
+                sideEffects: { tls: true, trust: ['dkim'] }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '250 2.0.0 Ok: queued as 12345' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'El MTA destino acepta el mensaje y lo encola para entrega local (MDA / buzón del usuario). En este punto se evalúa la política DMARC completa.',
+                sideEffects: { 
+                    tls: true,
+                    trust: ['reputation', 'dmarc']
+                }
+            },
+            {
+                lines: [
+                    { actor: 'client', text: 'QUIT' }
+                ],
+                direction: 'client-to-server',
+                explanation: 'Cierre ordenado de la sesión entre los dos servidores.',
+                sideEffects: { tls: true }
+            },
+            {
+                lines: [
+                    { actor: 'server', text: '221 2.0.0 Bye' }
+                ],
+                direction: 'server-to-client',
+                explanation: 'Fin de la transferencia. No hubo intercambio de credenciales en ningún momento.',
+                sideEffects: { tls: false }
+            }
+        ];
+        
+        function s2SpeedChanged() {
+            s2Speed = parseInt(document.getElementById('s2-speed').value);
+            document.getElementById('s2-speed-label').textContent = s2Speed + 'ms';
+        }
+        
+        function s2InitTrustPanel() {
+            const panel = document.getElementById('s2-trust-panel');
+            panel.innerHTML = '';
+            
+            const categories = {
+                'identidad': 'Identidad de la conexión',
+                'entrega': 'Resolución y entrega',
+                'seguridad': 'Seguridad del canal',
+                'autenticacion': 'Autenticación de dominio (sin credenciales)',
+                'modelo': 'Modelo de confianza'
+            };
+            
+            let currentCategory = null;
+            
+            s2TrustChecks.forEach(check => {
+                check.done = false;
+                
+                const cat = check.category || 'otros';
+                
+                // Insertar encabezado de categoría si cambia
+                if (cat !== currentCategory) {
+                    currentCategory = cat;
+                    if (categories[cat]) {
+                        const header = document.createElement('div');
+                        header.className = 'text-[10px] uppercase tracking-widest font-semibold text-zinc-500 pt-2 pb-0.5 px-1';
+                        header.textContent = categories[cat];
+                        panel.appendChild(header);
+                    }
+                }
+                
+                const div = document.createElement('div');
+                div.id = `trust-${check.id}`;
+                div.className = `check-item flex items-start gap-x-2.5 px-3 py-1.5 rounded-xl border border-zinc-700 bg-zinc-900`;
+                
+                div.innerHTML = `
+                    <div class="mt-0.5">
+                        <i class="fa-solid fa-circle text-zinc-600 text-[10px]"></i>
+                    </div>
+                    <div class="text-zinc-300 text-[13px] leading-tight">${check.label}</div>
+                `;
+                
+                panel.appendChild(div);
+            });
+        }
+        
+        function s2ActivateTrustCheck(checkId) {
+            const check = s2TrustChecks.find(c => c.id === checkId);
+            if (!check || check.done) return;
+            
+            check.done = true;
+            
+            const el = document.getElementById(`trust-${checkId}`);
+            if (!el) return;
+            
+            el.classList.add('active', 'border-emerald-600/60');
+            el.classList.remove('border-zinc-700');
+            
+            const icon = el.querySelector('i');
+            if (icon) {
+                icon.classList.remove('fa-circle', 'text-zinc-600');
+                icon.classList.add('fa-check-circle', 'text-emerald-400');
+            }
+        }
+
+        // Simulación de fallos educativos (no afecta el flujo principal)
+        function simulateFailure(type) {
+            const resultBox = document.getElementById('s2-failure-result');
+            resultBox.classList.remove('hidden');
+            resultBox.classList.add('block');
+
+            let html = '';
+
+            if (type === 'spf') {
+                html = `
+                    <div class="text-red-400 font-semibold">SPF FAIL</div>
+                    <div class="text-zinc-300 mt-0.5">El registro SPF de <span class="font-mono">ejemplo.com</span> no autoriza la IP 203.0.113.45.</div>
+                    <div class="text-amber-300 mt-1 text-[12px]">DMARC puede igualmente pasar si <strong>DKIM</strong> alinea correctamente (modo relaxed). Si ambos fallan → DMARC decide.</div>
+                `;
+                // Visual feedback: marcar temporalmente el check de SPF como fallido
+                const spfEl = document.getElementById('trust-spf');
+                if (spfEl) {
+                    spfEl.classList.add('!border-red-600/70', '!bg-red-950/30');
+                    setTimeout(() => {
+                        if (spfEl) spfEl.classList.remove('!border-red-600/70', '!bg-red-950/30');
+                    }, 2400);
+                }
+            } 
+            else if (type === 'dkim') {
+                html = `
+                    <div class="text-red-400 font-semibold">DKIM FAIL</div>
+                    <div class="text-zinc-300 mt-0.5">La firma DKIM no valida (clave rota, header modificado o sin firma).</div>
+                    <div class="text-amber-300 mt-1 text-[12px]">Si SPF pasa y alinea, DMARC suele pasar. Si ambos fallan, se aplica la política DMARC del dominio.</div>
+                `;
+                const dkimEl = document.getElementById('trust-dkim');
+                if (dkimEl) {
+                    dkimEl.classList.add('!border-red-600/70', '!bg-red-950/30');
+                    setTimeout(() => {
+                        if (dkimEl) dkimEl.classList.remove('!border-red-600/70', '!bg-red-950/30');
+                    }, 2400);
+                }
+            } 
+            else if (type === 'dmarc-reject') {
+                html = `
+                    <div class="text-red-400 font-semibold">DMARC REJECT (p=reject)</div>
+                    <div class="text-zinc-300 mt-0.5">Tanto SPF como DKIM fallaron (o no alinearon). La política DMARC del dominio es <span class="font-mono">p=reject</span>.</div>
+                    <div class="mt-1 text-red-300 text-[12px]"><strong>Resultado típico:</strong> 550 5.7.1 Message rejected due to DMARC policy</div>
+                    <div class="text-xs text-zinc-400 mt-1">El MTA destino rechaza el mensaje antes de encolarlo.</div>
+                `;
+            } 
+            else if (type === 'no-tls') {
+                html = `
+                    <div class="text-amber-400 font-semibold">Sin STARTTLS / TLS</div>
+                    <div class="text-zinc-300 mt-0.5">El canal no se cifró. El diálogo SMTP viaja en texto claro.</div>
+                    <div class="text-amber-300 mt-1 text-[12px]">Muchos MTAs modernos lo aceptan de forma "opportunistic", pero es menos seguro. Cada vez más dominios publican MTA-STS o DANE exigiendo TLS.</div>
+                `;
+                // Resaltar ausencia de candado
+                const tlsBadge = document.getElementById('s2-tls-badge');
+                if (tlsBadge) {
+                    tlsBadge.classList.add('!border-amber-500/70', '!text-amber-400');
+                    setTimeout(() => {
+                        if (tlsBadge) tlsBadge.classList.remove('!border-amber-500/70', '!text-amber-400');
+                    }, 2200);
+                }
+            }
+
+            resultBox.innerHTML = html;
+
+            // Auto-ocultar después de un tiempo
+            setTimeout(() => {
+                if (resultBox) {
+                    resultBox.classList.add('hidden');
+                    resultBox.classList.remove('block');
+                    resultBox.innerHTML = '';
+                }
+            }, 6500);
+        }
+        
+        function s2AppendLine(line) {
+            const terminal = document.getElementById('s2-terminal');
+            const div = document.createElement('div');
+            div.className = `terminal-line ${line.actor === 'client' ? 'client-line' : 'server-line'}`;
+            
+            const prefix = line.actor === 'client' ? '[MTA-ORIGEN] ' : '[MTA-DESTINO] ';
+            div.innerHTML = `<span class="opacity-75">${prefix}</span>${line.text}`;
+            
+            terminal.appendChild(div);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+        
+        function s2TriggerFlow(direction) {
+            const activeLine = document.getElementById('s2-connection-active');
+            const dot = document.getElementById('s2-flow-dot');
+            
+            const isClientToServer = direction === 'client-to-server';
+            
+            activeLine.setAttribute('stroke-opacity', '0.95');
+            activeLine.setAttribute('stroke', isClientToServer ? '#3b82f6' : '#10b981');
+            
+            dot.setAttribute('fill', isClientToServer ? '#3b82f6' : '#10b981');
+            dot.setAttribute('opacity', '1');
+            
+            const startX = isClientToServer ? 8 : 102;
+            const endX = isClientToServer ? 102 : 8;
+            
+            dot.setAttribute('cx', startX);
+            
+            const duration = Math.max(420, s2Speed * 0.75);
+            const startTime = performance.now();
+            
+            function animate(now) {
+                const elapsed = now - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const eased = 1 - Math.pow(1 - progress, 2);
+                const currentX = startX + (endX - startX) * eased;
+                
+                dot.setAttribute('cx', currentX);
+                
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    setTimeout(() => {
+                        dot.setAttribute('opacity', '0');
+                        activeLine.setAttribute('stroke-opacity', '0.25');
+                    }, 180);
+                }
+            }
+            
+            requestAnimationFrame(animate);
+        }
+        
+        function s2UpdateTLS(active) {
+            const badge = document.getElementById('s2-tls-badge');
+            const leftBox = document.getElementById('s2-left-box');
+            const rightBox = document.getElementById('s2-right-box');
+            
+            if (active) {
+                badge.classList.remove('hidden');
+                badge.classList.add('flex');
+                leftBox.classList.add('border-blue-400/60');
+                rightBox.classList.add('border-emerald-400/60');
+            } else {
+                badge.classList.add('hidden');
+                badge.classList.remove('flex');
+                leftBox.classList.remove('border-blue-400/60');
+                rightBox.classList.remove('border-emerald-400/60');
+            }
+        }
+        
+        function s2UpdateExplanation(text) {
+            document.getElementById('s2-explanation').innerHTML = text;
+        }
+        
+        function s2HighlightBoxes(direction) {
+            const left = document.getElementById('s2-left-box');
+            const right = document.getElementById('s2-right-box');
+            
+            left.classList.remove('active');
+            right.classList.remove('active');
+            
+            if (direction === 'client-to-server') {
+                left.classList.add('active');
+                setTimeout(() => left.classList.remove('active'), 900);
+            } else {
+                right.classList.add('active');
+                setTimeout(() => right.classList.remove('active'), 900);
+            }
+        }
+        
+        function s2UpdateDNSStatus(active) {
+            const el = document.getElementById('s2-dns-status');
+            if (active) {
+                el.innerHTML = '<span class="text-emerald-400">MX + SPF verificados</span>';
+            }
+        }
+        
+        function s2ExecuteStep(stepIndex) {
+            if (stepIndex >= s2Steps.length) {
+                s2StopPlay();
+                return;
+            }
+            
+            const step = s2Steps[stepIndex];
+            const terminal = document.getElementById('s2-terminal');
+            
+            // Agregar líneas (con soporte para modo SPF-bypass spoof y sin TLS)
+            step.lines.forEach(line => {
+                let textToShow = line.text;
+                
+                if (s2CurrentMode === 'spf-bypass-spoof') {
+                    if (line.text.includes('MAIL FROM:<carlos@ejemplo.com>')) {
+                        textToShow = 'MAIL FROM:<attacker@evil-attacker.com>';
+                    }
+                    if (line.text.includes('From: carlos@ejemplo.com')) {
+                        textToShow = 'From: "CEO" <ceo@empresa-legitima.com>';
+                    }
+                    if (line.text.includes('Este correo viaja sin autenticación con credenciales.')) {
+                        textToShow = 'Este correo parece venir de ceo@empresa-legitima.com (spoof en header From)';
+                    }
+                }
+                
+                if (s2CurrentMode === 'no-tls') {
+                    // Quitar STARTTLS del diálogo - simular que no se usa (común en puerto 25)
+                    if (line.text.includes('250-STARTTLS')) {
+                        textToShow = '250 8BITMIME';  // server no ofrece STARTTLS o cliente lo ignora
+                    }
+                    if (line.text === 'STARTTLS') {
+                        textToShow = '[Sin STARTTLS - conexión permanece en texto claro]';
+                    }
+                    if (line.text.includes('220 2.0.0 Ready to start TLS')) {
+                        textToShow = '[Cliente y servidor continúan sin cifrado]';
+                    }
+                    if (line.text.includes('EHLO mail.origen.com') && s2CurrentStep > 3) {
+                        // Evitar mostrar el segundo EHLO post-TLS
+                        textToShow = null; // lo saltamos
+                    }
+                }
+                
+                if (textToShow !== null) {
+                    s2AppendLine({ actor: line.actor, text: textToShow });
+                }
+            });
+            
+            // Flujo visual
+            if (step.direction) {
+                s2TriggerFlow(step.direction);
+                s2HighlightBoxes(step.direction);
+            }
+            
+            // TLS
+            if (step.sideEffects && step.sideEffects.hasOwnProperty('tls')) {
+                if (s2CurrentMode !== 'no-tls') {
+                    s2UpdateTLS(step.sideEffects.tls);
+                } else {
+                    // En modo sin TLS nunca mostramos el candado
+                    const badge = document.getElementById('s2-tls-badge');
+                    if (badge) badge.classList.add('hidden');
+                }
+            }
+            
+            // Trust checks
+            if (step.sideEffects && step.sideEffects.trust) {
+                step.sideEffects.trust.forEach(id => {
+                    if (s2CurrentMode === 'no-tls' && id === 'tls') {
+                        // En modo sin TLS, forzamos el estado de "sin cifrado" en lugar de activar como éxito
+                        const tlsEl = document.getElementById('trust-tls');
+                        if (tlsEl) {
+                            tlsEl.classList.add('!border-amber-600/70', '!bg-amber-950/30');
+                            tlsEl.innerHTML = `
+                                <div class="mt-0.5"><i class="fa-solid fa-exclamation-triangle text-amber-400 text-[10px]"></i></div>
+                                <div class="text-[13px] leading-tight text-amber-300">Sin TLS (canal en texto claro - riesgo de interceptación)</div>
+                            `;
+                        }
+                    } else {
+                        s2ActivateTrustCheck(id);
+                    }
+                });
+                
+                // Activar estado DNS cuando corresponda
+                if (step.sideEffects.trust.includes('mx') || step.sideEffects.trust.includes('spf')) {
+                    s2UpdateDNSStatus(true);
+                }
+            }
+            
+            // Explicación
+            s2UpdateExplanation(step.explanation);
+            
+            s2CurrentStep = stepIndex + 1;
+            
+            if (s2CurrentStep >= s2Steps.length) {
+                setTimeout(() => {
+                    s2StopPlay();
+                    const term = document.getElementById('s2-terminal');
+                    const endMsg = document.createElement('div');
+                    
+                    let finalText = '— Simulación finalizada (sin autenticación con credenciales) —';
+                    let color = 'text-emerald-400';
+                    
+                    if (s2CurrentMode === 'dmarc-reject') {
+                        finalText = '550 5.7.1 Message rejected due to DMARC policy (p=reject)';
+                        color = 'text-red-400';
+                    } else if (s2CurrentMode === 'dmarc-quarantine') {
+                        finalText = '250 Ok: queued as 12345 (but quarantined due to DMARC p=quarantine)';
+                        color = 'text-amber-400';
+                    } else if (s2CurrentMode === 'spf-bypass-spoof') {
+                        finalText = '250 Ok: queued as 12345 — Spoofed From header accepted (DMARC ausente o p=none)';
+                        color = 'text-purple-400';
+                    } else if (s2CurrentMode === 'no-tls') {
+                        finalText = '250 Ok: queued as 12345 — Entregado sin cifrado TLS (canal en claro)';
+                        color = 'text-amber-400';
+                    } else if (s2CurrentMode === 'spf-fail' || s2CurrentMode === 'dkim-fail') {
+                        color = 'text-amber-400';
+                    }
+                    
+                    endMsg.className = `${color} text-xs mt-2 px-2 font-medium`;
+                    endMsg.textContent = finalText;
+                    term.appendChild(endMsg);
+                }, 200);
+            }
+        }
+        
+        function s2Step() {
+            if (s2CurrentStep >= s2Steps.length) return;
+            s2StopPlay();
+            s2ExecuteStep(s2CurrentStep);
+        }
+        
+        function s2Play() {
+            if (s2CurrentStep >= s2Steps.length) {
+                s2Reset();
+            }
+            
+            s2IsPlaying = true;
+            const btn = document.getElementById('s2-play-btn');
+            const icon = document.getElementById('s2-play-icon');
+            const text = document.getElementById('s2-play-text');
+            
+            btn.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
+            btn.classList.add('bg-amber-600', 'hover:bg-amber-500');
+            icon.classList.remove('fa-play');
+            icon.classList.add('fa-pause');
+            text.textContent = 'Pausa';
+            
+            function playNext() {
+                if (!s2IsPlaying || s2CurrentStep >= s2Steps.length) {
+                    s2StopPlay();
+                    return;
+                }
+                
+                s2ExecuteStep(s2CurrentStep);
+                s2PlayInterval = setTimeout(playNext, s2Speed);
+            }
+            
+            playNext();
+        }
+        
+        function s2StopPlay() {
+            s2IsPlaying = false;
+            if (s2PlayInterval) {
+                clearTimeout(s2PlayInterval);
+                s2PlayInterval = null;
+            }
+            
+            const btn = document.getElementById('s2-play-btn');
+            const icon = document.getElementById('s2-play-icon');
+            const text = document.getElementById('s2-play-text');
+            
+            btn.classList.remove('bg-amber-600', 'hover:bg-amber-500');
+            btn.classList.add('bg-emerald-600', 'hover:bg-emerald-500');
+            icon.classList.remove('fa-pause');
+            icon.classList.add('fa-play');
+            text.textContent = 'Play';
+        }
+        
+        function s2PlayPause() {
+            if (s2IsPlaying) {
+                s2StopPlay();
+            } else {
+                s2Play();
+            }
+        }
+        
+        function s2Reset() {
+            s2StopPlay();
+            s2CurrentStep = 0;
+            
+            document.getElementById('s2-terminal').innerHTML = '';
+            
+            document.getElementById('s2-flow-dot').setAttribute('opacity', '0');
+            document.getElementById('s2-connection-active').setAttribute('stroke-opacity', '0');
+            
+            document.getElementById('s2-tls-badge').classList.add('hidden');
+            document.getElementById('s2-tls-badge').classList.remove('flex');
+            
+            document.getElementById('s2-left-box').classList.remove('border-blue-400/60');
+            document.getElementById('s2-right-box').classList.remove('border-emerald-400/60');
+            
+            // Reset trust panel
+            s2InitTrustPanel();
+            
+            document.getElementById('s2-dns-status').innerHTML = 'MX + SPF TXT';
+            
+            // Limpiar resultado de fallos
+            const failBox = document.getElementById('s2-failure-result');
+            if (failBox) {
+                failBox.classList.add('hidden');
+                failBox.classList.remove('block');
+                failBox.innerHTML = '';
+            }
+            
+            document.getElementById('s2-explanation').innerHTML = 
+                'Los dos servidores <strong>no intercambian credenciales</strong>. La confianza se basa en DNS (SPF/DKIM/DMARC), la IP de origen y reputación. TLS, DKIM y DMARC se verifican en diferentes momentos del flujo.';
+            
+            document.getElementById('s2-left-status').textContent = '203.0.113.45';
+            document.getElementById('s2-right-status').textContent = 'mail.destino.com:25';
+            
+            // Si el modo actual es no-tls, re-aplicar el estilo de advertencia después del reset del panel
+            if (s2CurrentMode === 'no-tls') {
+                setTimeout(() => {
+                    const tlsEl = document.getElementById('trust-tls');
+                    if (tlsEl) {
+                        tlsEl.classList.add('!border-amber-600/70', '!bg-amber-950/30');
+                        tlsEl.innerHTML = `
+                            <div class="mt-0.5"><i class="fa-solid fa-exclamation-triangle text-amber-400 text-[10px]"></i></div>
+                            <div class="text-[13px] leading-tight text-amber-300">Sin TLS (canal en texto claro - riesgo de interceptación)</div>
+                        `;
+                    }
+                    const badge = document.getElementById('s2-tls-badge');
+                    if (badge) badge.classList.add('hidden');
+                }, 30);
+            }
+        }
+
+        function s2SetMode(mode) {
+            s2CurrentMode = mode;
+            
+            // Visual: marcar botón activo
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active', 'border-emerald-600/70', 'bg-emerald-600/20'));
+            
+            // Buscar el botón clickeado por texto aproximado
+            let activeBtn = null;
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                const txt = btn.textContent.trim().toLowerCase();
+                if (mode === 'normal' && txt.includes('normal')) activeBtn = btn;
+                if (mode === 'spf-fail' && txt.includes('spf falla')) activeBtn = btn;
+                if (mode === 'dkim-fail' && txt.includes('dkim falla')) activeBtn = btn;
+                if (mode === 'dmarc-reject' && txt.includes('p=reject')) activeBtn = btn;
+                if (mode === 'dmarc-quarantine' && txt.includes('p=quarantine')) activeBtn = btn;
+                if (mode === 'dmarc-none' && txt.includes('p=none')) activeBtn = btn;
+                if (mode === 'spf-bypass-spoof' && txt.includes('spf-bypass')) activeBtn = btn;
+            });
+            if (activeBtn) {
+                activeBtn.classList.add('active', 'border-emerald-600/70', 'bg-emerald-600/20');
+            }
+            
+            s2Reset();
+            
+            // Pre-activar o marcar checks según el modo
+            const trustPanel = document.getElementById('s2-trust-panel');
+            
+            if (mode === 'spf-fail') {
+                // SPF fallará
+                setTimeout(() => {
+                    const el = document.getElementById('trust-spf');
+                    if (el) {
+                        el.classList.add('!border-red-600/70', '!bg-red-950/30');
+                        const icon = el.querySelector('i');
+                        if (icon) { icon.classList.remove('fa-circle'); icon.classList.add('fa-times-circle', 'text-red-400'); }
+                    }
+                }, 50);
+                document.getElementById('s2-explanation').innerHTML = 'Modo: <strong>SPF falla</strong>. El MAIL FROM usa un dominio cuya SPF no autoriza esta IP. DMARC puede aún pasar si DKIM alinea.';
+            }
+            
+            if (mode === 'dkim-fail') {
+                setTimeout(() => {
+                    const el = document.getElementById('trust-dkim');
+                    if (el) {
+                        el.classList.add('!border-red-600/70', '!bg-red-950/30');
+                        const icon = el.querySelector('i');
+                        if (icon) { icon.classList.remove('fa-circle'); icon.classList.add('fa-times-circle', 'text-red-400'); }
+                    }
+                }, 50);
+                document.getElementById('s2-explanation').innerHTML = 'Modo: <strong>DKIM falla</strong>. La firma en los headers no valida contra la clave DNS.';
+            }
+            
+            if (mode === 'dmarc-reject' || mode === 'dmarc-quarantine' || mode === 'dmarc-none') {
+                const policy = mode.split('-')[1];
+                document.getElementById('s2-explanation').innerHTML = `Modo DMARC: <strong>p=${policy}</strong>. Esto determina qué hace el receptor cuando SPF y/o DKIM fallan.`;
+            }
+            
+            if (mode === 'spf-bypass-spoof') {
+                document.getElementById('s2-explanation').innerHTML = 
+                    '<strong>SPF-bypass + Spoof</strong> (técnica del repo CanIPhish/spf-bypass): MAIL FROM usa un dominio del atacante (pasa SPF), pero el header <code>From:</code> spoofs un dominio legítimo. Sin DMARC fuerte (o p=none), el mail llega y parece legítimo.';
+                
+                // Marcar SPF como PASS (porque el envelope es del atacante), pero destacar el spoof en From
+                setTimeout(() => {
+                    const spfEl = document.getElementById('trust-spf');
+                    if (spfEl) {
+                        spfEl.innerHTML = `
+                            <div class="mt-0.5"><i class="fa-solid fa-check-circle text-emerald-400 text-[10px]"></i></div>
+                            <div class="text-[13px] leading-tight">SPF: PASS (attacker@evil.com) — pero <span class="text-red-400 font-semibold">From: header spoofeado</span></div>
+                        `;
+                    }
+                }, 80);
+            }
+
+            if (mode === 'no-tls') {
+                document.getElementById('s2-explanation').innerHTML = 
+                    '<strong>Sin TLS</strong>: El canal no se cifra. En puerto 25 es común (STARTTLS es opcional/opportunistic). Todo el diálogo SMTP viaja en texto claro. TLS badge no aparece y se marca como riesgo de seguridad.';
+                
+                // Marcar el check de TLS como fallido / sin cifrado
+                setTimeout(() => {
+                    const tlsEl = document.getElementById('trust-tls');
+                    if (tlsEl) {
+                        tlsEl.classList.add('!border-amber-600/70', '!bg-amber-950/30');
+                        tlsEl.innerHTML = `
+                            <div class="mt-0.5"><i class="fa-solid fa-exclamation-triangle text-amber-400 text-[10px]"></i></div>
+                            <div class="text-[13px] leading-tight text-amber-300">Sin TLS (canal en texto claro - riesgo de interceptación)</div>
+                        `;
+                    }
+                    // Ocultar badge
+                    const badge = document.getElementById('s2-tls-badge');
+                    if (badge) badge.classList.add('hidden');
+                }, 60);
+            }
+        }
+        
+        // ============================================
+        // Inicialización general
+        // ============================================
+        function initialize() {
+            initializeTailwind();
+            
+            // Escenario 1
+            document.getElementById('s1-speed').value = s1Speed;
+            document.getElementById('s1-speed-label').textContent = s1Speed + 'ms';
+            
+            // Escenario 2
+            document.getElementById('s2-speed').value = s2Speed;
+            document.getElementById('s2-speed-label').textContent = s2Speed + 'ms';
+            
+            s2InitTrustPanel();
+            
+            // Mensaje inicial amigable en terminales
+            const s1Term = document.getElementById('s1-terminal');
+            s1Term.innerHTML = `<div class="px-2 py-1 text-zinc-500 text-xs">Haz clic en <span class="text-blue-400 font-medium">Paso</span> o <span class="text-blue-400 font-medium">Play</span>. Usá los botones de TLS al lado para probar escenarios sin cifrado.</div>`;
+            
+            // Inicializar modo TLS para s1
+            setTimeout(() => {
+                const tlsBtn = Array.from(document.querySelectorAll('.mode-btn')).find(b => b.textContent.trim().toLowerCase().includes('con tls'));
+                if (tlsBtn) tlsBtn.classList.add('active', 'border-blue-600/70', 'bg-blue-600/20');
+            }, 120);
+            
+            const s2Term = document.getElementById('s2-terminal');
+            s2Term.innerHTML = `<div class="px-2 py-1 text-zinc-500 text-xs">Fijate cómo se activan los checks de <span class="text-emerald-400 font-medium">SPF, DKIM, DMARC y TLS</span>. Usá los botones de <strong>Modos</strong> al lado de Play para probar SPF-bypass, DMARC policies, etc.</div>`;
+            
+            // Inicializar modo normal para Escenario 2
+            setTimeout(() => {
+                const normalBtn = Array.from(document.querySelectorAll('.mode-btn')).find(b => b.textContent.trim().toLowerCase().includes('normal'));
+                if (normalBtn) normalBtn.classList.add('active', 'border-emerald-600/70', 'bg-emerald-600/20');
+            }, 100);
+            
+            // Teclas de acceso rápido (útil para demo)
+            document.addEventListener('keydown', function(e) {
+                if (e.key === '1') {
+                    s1Step();
+                }
+                if (e.key === '2') {
+                    s2Step();
+                }
+                if (e.key.toLowerCase() === 'r') {
+                    if (document.activeElement.tagName === 'INPUT') return;
+                    s1Reset();
+                    s2Reset();
+                }
+            });
+            
+            // Mensaje de ayuda en consola
+            console.log('%c[SMTP Sim] Simulación lista. Usa las teclas 1 y 2 para avanzar cada escenario. R para reiniciar ambos.', 'color:#3f3f46');
+        }
+        
+        // Arranque
+        window.onload = initialize;
+        
+        // Exponer funciones por si se quiere depurar o extender
+        window.s1 = { step: () => s1Step(), reset: () => s1Reset(), play: () => s1Play() };
+        window.s2 = { step: () => s2Step(), reset: () => s2Reset(), play: () => s2Play() };
+    </script>
+</body>
+</html>
