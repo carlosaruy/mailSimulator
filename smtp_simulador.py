@@ -179,7 +179,8 @@ def build_s2_conversation(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     if spoof:
         helo_name     = "mail.evil-reverso.com"
         env_domain    = "evil-reverso.com"          # dominio del envelope (MAIL FROM)
-        mail_from     = "MAIL FROM:<atacante@mail.evil-reverso.com>"
+        mail_from_line = "MAIL FROM: atacante@mail.evil-reverso.com"
+        rcpt_to_line   = "RCPT TO: destino@mail.destino.com"
         from_header   = 'From: "CEO" <ceo@empresa-legitima.com>'
         header_domain = "empresa-legitima.com"      # dominio del From: (el suplantado)
         spf_raw_pass  = True                         # el atacante publica SPF para su IP
@@ -189,7 +190,8 @@ def build_s2_conversation(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     else:
         helo_name     = "mail.origen.com"
         env_domain    = "ejemplo.com"
-        mail_from     = "MAIL FROM:<carlos@ejemplo.com>"
+        mail_from_line = "MAIL FROM: carlos@ejemplo.com"
+        rcpt_to_line   = "RCPT TO: destino@mail.destino.com"
         from_header   = "From: carlos@ejemplo.com"
         header_domain = "ejemplo.com"
         spf_raw_pass  = spf_ok
@@ -243,24 +245,24 @@ def build_s2_conversation(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     # 3 - MAIL FROM + evaluacion SPF
     if spf_raw_pass:
         if spoof:
-            mf_expl = (f"{mail_from}. SPF se evalua sobre el dominio del envelope ({env_domain}) y PASA: el atacante "
+            mf_expl = (f"{mail_from_line}. SPF se evalua sobre el dominio del envelope ({env_domain}) y PASA: el atacante "
                        f"publico un SPF que autoriza su propia IP. Pero esto valida {env_domain}, NO "
                        f"empresa-legitima.com. SPF mira el envelope, no el From: que vera la victima.")
         else:
-            mf_expl = (f"{mail_from}. SPF evalua la IP de origen contra el registro del dominio del envelope "
+            mf_expl = (f"{mail_from_line}. SPF evalua la IP de origen contra el registro del dominio del envelope "
                        f"({env_domain}) y pasa.")
     else:
-        mf_expl = (f"{mail_from}. SPF FALLA para {env_domain} (la IP no esta autorizada). Muchos MTAs no cortan "
+        mf_expl = (f"{mail_from_line}. SPF FALLA para {env_domain} (la IP no esta autorizada). Muchos MTAs no cortan "
                    "aca: registran el fallo y dejan que DMARC decida sobre el resultado final.")
     convo.append({
-        "client": [mail_from],
+        "client": [mail_from_line],
         "server": ["250 2.1.0 Ok"],
         "explanation": mf_expl,
     })
 
     # 4 - RCPT TO
     convo.append({
-        "client": ["RCPT TO:<destino@mail.destino.com>"],
+        "client": [rcpt_to_line],
         "server": ["250 2.1.5 Ok"],
         "explanation": "El destinatario pertenece a un dominio que ESTE MTA hospeda, asi que no es relay y lo acepta. "
                        "(Si fuera un dominio ajeno responderia 554 5.7.1 relay access denied.)",
@@ -438,9 +440,10 @@ with col2:
         if spoof:
             st.info(
                 "Conexion desde **203.0.113.45** con reverse DNS `mail.evil-reverso.com`, dominio cuyo SPF "
-                "autoriza esa IP. El **envelope** sera `atacante@mail.evil-reverso.com` (SPF pasa), pero el "
-                "**From: header** dira `CEO <ceo@empresa-legitima.com>`. Aca el selector DMARC representa la "
-                "politica de **empresa-legitima.com** (el dominio suplantado): es lo que decide si el spoof entra."
+                "autoriza esa IP. En la conversación verás claramente los valores del **envelope** que lee el servidor: "
+                "**MAIL FROM: atacante@mail.evil-reverso.com** y **RCPT TO: destino@mail.destino.com** (SPF pasa para el atacante). "
+                "Pero dentro de DATA los headers muestran **From: \"CEO\" <ceo@empresa-legitima.com>**. "
+                "El selector DMARC representa la política que publica **empresa-legitima.com** (el dominio suplantado)."
             )
         if not use_tls:
             st.warning("Sin TLS el canal va en texto claro (comun en el puerto 25, pero interceptable).")
